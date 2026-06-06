@@ -3,10 +3,12 @@ package com.ferricstore;
 public final class WorkflowContext {
     private final FerricStoreClient client;
     private final FlowRecord job;
+    private final String state;
 
-    WorkflowContext(FerricStoreClient client, FlowRecord job) {
+    WorkflowContext(FerricStoreClient client, FlowRecord job, String state) {
         this.client = client;
         this.job = job;
+        this.state = state;
     }
 
     public FerricStoreClient client() {
@@ -26,7 +28,7 @@ public final class WorkflowContext {
     }
 
     public String state() {
-        return job.state();
+        return state;
     }
 
     public String partitionKey() {

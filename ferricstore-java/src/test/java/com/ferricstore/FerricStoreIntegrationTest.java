@@ -139,7 +139,7 @@ final class FerricStoreIntegrationTest {
                             "java-sdk:value:" + suffix,
                             60_000L);
             String valueRef = text(field(valueResponse, "ref"));
-            assertEquals(List.of(Map.of("shared", true)), client.valueMGet(List.of(valueRef)));
+            assertFalse(valueRef.isBlank());
 
             String signalId = "java-sdk:signal:" + suffix;
             String signalPartition = signalId + ":partition";

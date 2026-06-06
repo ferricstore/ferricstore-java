@@ -115,20 +115,20 @@ public final class WorkflowWorker {
                                     concurrency,
                                     virtualThreads,
                                     executor,
-                                    job -> apply(job, handler))
+                                    job -> apply(job, state, handler))
                             .size();
         }
         return applied;
     }
 
-    private Void apply(FlowRecord job, WorkflowHandler handler) {
+    private Void apply(FlowRecord job, String state, WorkflowHandler handler) {
         try {
-            Outcome outcome = handler.handle(new WorkflowContext(client, job));
+            Outcome outcome = handler.handle(new WorkflowContext(client, job, state));
             if (outcome instanceof TransitionOutcome transition) {
                 client.transition(
                         TransitionOptions.builder(
                                         job.id(),
-                                        job.state(),
+                                        state,
                                         transition.toState(),
                                         job.leaseToken(),
                                         job.fencingToken())
