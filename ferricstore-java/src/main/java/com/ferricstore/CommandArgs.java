@@ -59,12 +59,15 @@ final class CommandArgs {
     }
 
     static void appendPayloadRead(List<Object> args, Boolean payload, Long maxBytes) {
-        if (payload != null) {
+        if (Boolean.FALSE.equals(payload)) {
+            args.add("NOPAYLOAD");
+            return;
+        }
+        if (Boolean.TRUE.equals(payload) || maxBytes != null) {
             args.add("PAYLOAD");
-            args.add(payload ? "true" : "false");
         }
         if (maxBytes != null) {
-            args.add("PAYLOAD_MAX_BYTES");
+            args.add("MAXBYTES");
             args.add(maxBytes);
         }
     }

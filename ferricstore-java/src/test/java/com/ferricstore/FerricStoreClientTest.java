@@ -102,7 +102,7 @@ final class FerricStoreClientTest {
         assertArgs(List.of(
             "FLOW.CLAIM_DUE", "order", "STATE", "created", "WORKER", "worker-1",
             "LEASE_MS", 5000L, "LIMIT", 100, "NOW", 100L,
-            "PARTITION", "p1", "PAYLOAD", "true", "PAYLOAD_MAX_BYTES", 2048L,
+            "PARTITION", "p1", "PAYLOAD", "MAXBYTES", 2048L,
             "RECLAIM_EXPIRED", "true", "RECLAIM_RATIO", 10L
         ), executor.last());
         assertEquals(1, jobs.size());
@@ -139,6 +139,56 @@ final class FerricStoreClientTest {
             "WORKER", "worker-1", "LEASE_MS", 5000L, "LIMIT", 100, "NOW", 100L,
             "PARTITIONS", 2, "p1", "p2"
         ), executor.last());
+    }
+
+    @Test
+    void claimJobsBuildsCompactReturnAndDecodesItems() {
+        FakeExecutor executor = new FakeExecutor(List.of(
+            List.of("flow-1", "p1", "lease-1", 9L, "created"),
+            Resp.testMap("id", "flow-2", "partition_key", "p2", "lease_token", "lease-2", "fencing_token", "10")
+        ));
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        List<ClaimedItem> jobs = client.claimJobs(ClaimDueOptions.builder("order", "worker-1")
+            .state("created")
+            .limit(2)
+            .nowMs(100)
+            .includeState(true)
+            .build());
+
+        assertArgs(List.of(
+            "FLOW.CLAIM_DUE", "order", "STATE", "created", "WORKER", "worker-1",
+            "LEASE_MS", 30000L, "LIMIT", 2, "NOW", 100L, "RETURN", "JOBS_COMPACT_STATE"
+        ), executor.last());
+        assertEquals(List.of(
+            new ClaimedItem("flow-1", "lease-1", 9L, "p1", "", "running", "created", null),
+            new ClaimedItem("flow-2", "lease-2", 10L, "p2")
+        ), jobs);
+    }
+
+    @Test
+    void reclaimBuildsRunningLeaseCommandShape() {
+        FakeExecutor executor = new FakeExecutor(List.of(
+            Resp.testMap("id", "flow-1", "lease_token", "lease-1", "fencing_token", 3L)
+        ));
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        List<FlowRecord> jobs = client.reclaim(ClaimDueOptions.builder("order", "worker-1")
+            .partitionKey("p1")
+            .leaseMs(5000)
+            .limit(10)
+            .nowMs(100)
+            .payload(false)
+            .build());
+
+        assertArgs(List.of(
+            "FLOW.RECLAIM", "order", "WORKER", "worker-1", "LEASE_MS", 5000L,
+            "LIMIT", 10, "NOW", 100L, "PARTITION", "p1", "NOPAYLOAD"
+        ), executor.last());
+        assertEquals(1, jobs.size());
+        assertEquals("flow-1", jobs.getFirst().id());
+        assertEquals("lease-1", jobs.getFirst().leaseToken());
+        assertEquals(3L, jobs.getFirst().fencingToken());
     }
 
     @Test

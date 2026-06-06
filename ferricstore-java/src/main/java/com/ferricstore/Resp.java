@@ -45,6 +45,45 @@ final class Resp {
         );
     }
 
+    static List<ClaimedItem> claimedItems(Object value) {
+        if (value == null) {
+            return List.of();
+        }
+        if (!(value instanceof List<?> list)) {
+            throw new FerricStoreException("expected RESP array, got " + value.getClass().getSimpleName());
+        }
+        return list.stream().map(Resp::claimedItem).toList();
+    }
+
+    static ClaimedItem claimedItem(Object value) {
+        if (value instanceof List<?> list) {
+            if (list.size() < 4) {
+                throw new FerricStoreException("expected claimed item array with at least 4 fields");
+            }
+            return new ClaimedItem(
+                string(list.get(0)),
+                string(list.get(2)),
+                number(list.get(3)),
+                optionalString(list.get(1)),
+                "",
+                "running",
+                list.size() > 4 ? optionalString(list.get(4)) : null,
+                null
+            );
+        }
+        Map<String, Object> map = map(value);
+        return new ClaimedItem(
+            string(map.get("id")),
+            string(map.get("lease_token")),
+            number(map.get("fencing_token")),
+            optionalString(map.get("partition_key")),
+            string(map.get("type")),
+            optionalString(map.get("state")) == null ? "running" : optionalString(map.get("state")),
+            optionalString(map.get("run_state")),
+            map.get("payload")
+        );
+    }
+
     static Map<String, Object> map(Object value) {
         if (value instanceof Map<?, ?> raw) {
             Map<String, Object> mapped = new LinkedHashMap<>();

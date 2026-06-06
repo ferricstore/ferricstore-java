@@ -112,7 +112,20 @@ for (FlowRecord job : jobs) {
         .partitionKey(job.partitionKey())
         .build());
 }
+
+List<ClaimedItem> compactJobs = client.claimJobs(ClaimDueOptions.builder("order", "worker-1")
+    .state("charged")
+    .limit(10)
+    .build());
+
+for (ClaimedItem job : compactJobs) {
+    client.complete(CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+        .partitionKey(job.partitionKey())
+        .build());
+}
 ```
+
+Use `claimDue` when handlers need hydrated workflow records and payloads. Use `claimJobs` when a worker only needs id, partition, lease token, and fencing token for a write such as complete, retry, or fail.
 
 ## FerricStore KV And Data Structures
 

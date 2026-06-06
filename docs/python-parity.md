@@ -42,8 +42,8 @@ Legend:
 | `FLOW.VALUE.PUT` | Done |
 | `FLOW.VALUE.MGET` | Done |
 | `FLOW.SIGNAL` | Partial |
-| `FLOW.CLAIM_DUE` | Done |
-| `FLOW.RECLAIM` | Done |
+| `FLOW.CLAIM_DUE` | Done | Includes `claimDue` for records and `claimJobs` for compact lease items. |
+| `FLOW.RECLAIM` | Done | Includes `reclaim` for records and `reclaimJobs` for compact lease items. |
 | `FLOW.EXTEND_LEASE` | Done |
 | `FLOW.TRANSITION`, `FLOW.TRANSITION_MANY` | Done |
 | `FLOW.COMPLETE`, `FLOW.COMPLETE_MANY` | Done |

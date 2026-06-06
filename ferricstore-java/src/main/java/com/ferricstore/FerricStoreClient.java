@@ -75,15 +75,15 @@ public final class FerricStoreClient implements AutoCloseable {
     }
 
     public Object command(Object... args) {
-        return command(List.of(args));
+        return command(CommandArgs.args(args));
     }
 
     public Object command(List<Object> args) {
-        return executor.execute(List.copyOf(args));
+        return executor.execute(copyArgs(args));
     }
 
     public List<Object> pipeline(List<List<Object>> commands) {
-        return executor.pipeline(commands.stream().map(List::copyOf).toList());
+        return executor.pipeline(commands.stream().map(FerricStoreClient::copyArgs).toList());
     }
 
     public KeyValueStore kv() { return kv; }
@@ -223,9 +223,19 @@ public final class FerricStoreClient implements AutoCloseable {
         return Resp.records(command(cmd), codec);
     }
 
+    public List<ClaimedItem> claimJobs(ClaimDueOptions options) {
+        List<Object> cmd = claimCommand("FLOW.CLAIM_DUE", jobOnly(options));
+        return Resp.claimedItems(command(cmd));
+    }
+
     public List<FlowRecord> reclaim(ClaimDueOptions options) {
-        List<Object> cmd = claimCommand("FLOW.RECLAIM", options);
+        List<Object> cmd = reclaimCommand(options);
         return Resp.records(command(cmd), codec);
+    }
+
+    public List<ClaimedItem> reclaimJobs(ClaimDueOptions options) {
+        List<Object> cmd = reclaimCommand(jobOnly(options));
+        return Resp.claimedItems(command(cmd));
     }
 
     public Object extendLease(String id, String leaseToken, long fencingToken, long leaseMs, String partitionKey) {
@@ -591,6 +601,9 @@ public final class FerricStoreClient implements AutoCloseable {
         if (options.partitionKey() != null && !options.partitionKeys().isEmpty()) {
             throw new IllegalArgumentException("partitionKey and partitionKeys are mutually exclusive");
         }
+        if (options.includeState() && !options.jobOnly()) {
+            throw new IllegalArgumentException("includeState requires jobOnly=true");
+        }
         List<Object> cmd = args(command, options.type());
         if (options.states().isEmpty()) {
             append(cmd, "STATE", options.state());
@@ -619,6 +632,38 @@ public final class FerricStoreClient implements AutoCloseable {
         }
         appendBool(cmd, "RECLAIM_EXPIRED", options.reclaimExpired());
         append(cmd, "RECLAIM_RATIO", options.reclaimRatio());
+        return cmd;
+    }
+
+    private List<Object> reclaimCommand(ClaimDueOptions options) {
+        if (!options.states().isEmpty()) {
+            throw new IllegalArgumentException("FLOW.RECLAIM does not support states");
+        }
+        if (options.partitionKey() != null && !options.partitionKeys().isEmpty()) {
+            throw new IllegalArgumentException("partitionKey and partitionKeys are mutually exclusive");
+        }
+        if (options.includeState() && !options.jobOnly()) {
+            throw new IllegalArgumentException("includeState requires jobOnly=true");
+        }
+        List<Object> cmd = args("FLOW.RECLAIM", options.type(), "WORKER", options.worker(),
+            "LEASE_MS", options.leaseMs() == 0 ? 30_000 : options.leaseMs(),
+            "LIMIT", options.limit() == 0 ? 1 : options.limit(),
+            "NOW", options.nowMs() == 0 ? nowMs() : options.nowMs());
+        append(cmd, "PARTITION", options.partitionKey());
+        if (!options.partitionKeys().isEmpty()) {
+            cmd.add("PARTITIONS");
+            cmd.add(options.partitionKeys().size());
+            cmd.addAll(options.partitionKeys());
+        }
+        append(cmd, "PRIORITY", options.priority());
+        appendPayloadRead(cmd, options.payload(), options.payloadMaxBytes());
+        for (String value : options.values()) {
+            append(cmd, "VALUE", value);
+        }
+        append(cmd, "VALUE_MAX_BYTES", options.valueMaxBytes());
+        if (options.jobOnly()) {
+            append(cmd, "RETURN", options.includeState() ? "JOBS_COMPACT_STATE" : "JOBS_COMPACT");
+        }
         return cmd;
     }
 
@@ -666,6 +711,18 @@ public final class FerricStoreClient implements AutoCloseable {
             return Resp.records(response, codec);
         }
         return response;
+    }
+
+    private static List<Object> copyArgs(List<Object> args) {
+        List<Object> copy = new ArrayList<>(args.size());
+        for (int i = 0; i < args.size(); i++) {
+            Object value = args.get(i);
+            if (value == null) {
+                throw new IllegalArgumentException("Redis command argument cannot be null at index " + i);
+            }
+            copy.add(value);
+        }
+        return List.copyOf(copy);
     }
 
     private List<FlowRecord> indexQuery(String command, String key, String partitionKey, int count) {
@@ -716,8 +773,21 @@ public final class FerricStoreClient implements AutoCloseable {
     private static List<Object> prefix(String command, Object[] rest) {
         List<Object> args = new ArrayList<>();
         args.add(command);
-        args.addAll(List.of(rest));
+        for (Object value : rest) {
+            args.add(value);
+        }
         return args;
+    }
+
+    private static ClaimDueOptions jobOnly(ClaimDueOptions options) {
+        if (options.jobOnly()) {
+            return options;
+        }
+        return new ClaimDueOptions(options.type(), options.state(), options.states(), options.worker(),
+            options.partitionKey(), options.partitionKeys(), options.leaseMs(), options.limit(), options.nowMs(),
+            options.blockMs(), options.priority(), options.reclaimExpired(), options.reclaimRatio(),
+            options.payload(), options.payloadMaxBytes(), options.values(), options.valueMaxBytes(),
+            true, options.includeState());
     }
 
     private static String requiredPartition(CreateItem item) {

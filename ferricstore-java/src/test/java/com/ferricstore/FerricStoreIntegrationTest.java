@@ -29,15 +29,14 @@ final class FerricStoreIntegrationTest {
                 .idempotent(true)
                 .build());
 
-            List<FlowRecord> jobs = client.claimDue(ClaimDueOptions.builder("it_order", "it-worker")
+            List<ClaimedItem> jobs = client.claimJobs(ClaimDueOptions.builder("it_order", "it-worker")
                 .state("created")
-                .payload(true)
                 .limit(1)
                 .leaseMs(30_000)
                 .build());
 
             assertFalse(jobs.isEmpty());
-            FlowRecord job = jobs.getFirst();
+            ClaimedItem job = jobs.getFirst();
             client.complete(CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
                 .partitionKey(job.partitionKey())
                 .result(Map.of("ok", true))

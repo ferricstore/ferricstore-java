@@ -24,6 +24,11 @@ public final class JedisRedisExecutor implements RedisExecutor, AutoCloseable {
         if (args.isEmpty()) {
             throw new IllegalArgumentException("empty Redis command");
         }
+        for (int i = 0; i < args.size(); i++) {
+            if (args.get(i) == null) {
+                throw new IllegalArgumentException("Redis command argument cannot be null at index " + i);
+            }
+        }
         try {
             ProtocolCommand command = new RawCommand(bytes(args.getFirst()));
             byte[][] commandArgs = new byte[args.size() - 1][];
