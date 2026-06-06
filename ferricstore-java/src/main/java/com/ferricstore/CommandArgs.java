@@ -9,7 +9,11 @@ final class CommandArgs {
     }
 
     static List<Object> args(Object... values) {
-        return new ArrayList<>(List.of(values));
+        List<Object> args = new ArrayList<>(values.length);
+        for (Object value : values) {
+            args.add(value);
+        }
+        return args;
     }
 
     static void append(List<Object> args, String name, Object value) {
@@ -55,15 +59,12 @@ final class CommandArgs {
     }
 
     static void appendPayloadRead(List<Object> args, Boolean payload, Long maxBytes) {
-        if (Boolean.FALSE.equals(payload)) {
-            args.add("NOPAYLOAD");
-            return;
-        }
-        if (Boolean.TRUE.equals(payload) || maxBytes != null) {
+        if (payload != null) {
             args.add("PAYLOAD");
+            args.add(payload ? "true" : "false");
         }
         if (maxBytes != null) {
-            args.add("MAXBYTES");
+            args.add("PAYLOAD_MAX_BYTES");
             args.add(maxBytes);
         }
     }

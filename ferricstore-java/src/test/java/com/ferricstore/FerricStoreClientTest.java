@@ -93,6 +93,8 @@ final class FerricStoreClientTest {
             .leaseMs(5000)
             .limit(100)
             .nowMs(100)
+            .payload(true)
+            .payloadMaxBytes(2048)
             .reclaimExpired(true)
             .reclaimRatio(10)
             .build());
@@ -100,7 +102,8 @@ final class FerricStoreClientTest {
         assertArgs(List.of(
             "FLOW.CLAIM_DUE", "order", "STATE", "created", "WORKER", "worker-1",
             "LEASE_MS", 5000L, "LIMIT", 100, "NOW", 100L,
-            "PARTITION", "p1", "RECLAIM_EXPIRED", "true", "RECLAIM_RATIO", 10L
+            "PARTITION", "p1", "PAYLOAD", "true", "PAYLOAD_MAX_BYTES", 2048L,
+            "RECLAIM_EXPIRED", "true", "RECLAIM_RATIO", 10L
         ), executor.last());
         assertEquals(1, jobs.size());
         FlowRecord job = jobs.getFirst();
