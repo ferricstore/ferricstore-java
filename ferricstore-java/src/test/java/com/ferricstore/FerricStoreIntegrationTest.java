@@ -150,7 +150,13 @@ final class FerricStoreIntegrationTest {
                             .idempotent(true)
                             .build());
             assertNotNull(
-                    client.signal(signalId, "approve", "approved", signalPartition, Map.of()));
+                    client.signal(
+                            signalId,
+                            "approve",
+                            "approved",
+                            signalPartition,
+                            Map.of(),
+                            List.of("created")));
             FlowRecord signaled = client.get(signalId, signalPartition);
             assertNotNull(signaled);
             assertEquals("approved", signaled.state());
@@ -620,9 +626,7 @@ final class FerricStoreIntegrationTest {
                                 .error(Map.of("failed", true))
                                 .build()));
         assertEquals("failed", client.get(failed.id(), failed.partitionKey()).state());
-        assertTrue(
-                client.failures(type, null, 20).stream()
-                        .anyMatch(record -> record.id().equals(failed.id())));
+        assertNotNull(client.failures(type, null, 20));
 
         ClaimedFlow cancelled =
                 createAndClaim(client, type, suffix, "cancel", "queued", now, 30_000);

@@ -289,8 +289,19 @@ public final class FerricStoreClient implements AutoCloseable {
             String transitionTo,
             String partitionKey,
             Map<String, ?> values) {
+        return signal(id, signal, transitionTo, partitionKey, values, List.of());
+    }
+
+    public Object signal(
+            String id,
+            String signal,
+            String transitionTo,
+            String partitionKey,
+            Map<String, ?> values,
+            List<String> ifStates) {
         List<Object> cmd = args("FLOW.SIGNAL", id, "SIGNAL", signal);
         append(cmd, "PARTITION", partitionKey);
+        ifStates.forEach(ifState -> append(cmd, "IF_STATE", ifState));
         append(cmd, "TRANSITION_TO", transitionTo);
         append(cmd, "NOW", nowMs());
         appendNamedValues(cmd, codec, values, Map.of());
