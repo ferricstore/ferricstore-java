@@ -54,12 +54,18 @@ try (FerricStoreClient client = FerricStoreClient.connect("redis://127.0.0.1:637
 
     queue.enqueue("email-1", Map.of("template", "welcome", "userId", "user-1"));
 
-    QueueWorkerResult result = queue.worker("email-worker-1").runOnce(job -> {
-        System.out.println(job.id() + " " + job.payload());
-        return Map.of("sent", true);
-    });
+    QueueWorkerResult result = queue.worker("email-worker-1")
+        .batchSize(256)
+        .concurrency(128)
+        .virtualThreads()
+        .runOnce(job -> {
+            System.out.println(job.id() + " " + job.payload());
+            return Map.of("sent", true);
+        });
 }
 ```
+
+The low-level client is synchronous and blocking. Worker concurrency is handled at the worker layer: a worker claims a batch of durable leases, then processes those jobs concurrently before writing complete, retry, fail, or transition commands back to FerricStore. `virtualThreads()` uses Java virtual threads and still respects the configured `concurrency` limit. Spring apps can pass an application-owned `ExecutorService` with `.executor(...)`.
 
 ## Explicit Workflow
 
@@ -78,7 +84,11 @@ try (FerricStoreClient client = FerricStoreClient.connect("redis://127.0.0.1:637
     });
 
     order.start("order-1", Map.of("amount", 42, "userId", "user-1"));
-    order.worker("order-worker-1", List.of("created", "charged")).runOnce();
+    order.worker("order-worker-1", List.of("created", "charged"))
+        .batchSize(128)
+        .concurrency(64)
+        .virtualThreads()
+        .runOnce();
 }
 ```
 

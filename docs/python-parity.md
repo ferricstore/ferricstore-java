@@ -64,8 +64,8 @@ Legend:
 | --- | --- | --- |
 | `QueueClient.queue` | Done | `new QueueClient(client).queue(...)`. |
 | `Queue.enqueue`, `enqueue_many` | Done | `enqueue`, `enqueueMany`. |
-| Worker `run_once` | Done | `QueueWorker.runOnce`. |
-| Worker `run`, start/stop/join/stats | Partial | Java currently exposes a simple synchronous `runOnce`; lifecycle loops belong in the application for now. |
+| Worker `run_once` | Done | `QueueWorker.runOnce` with `batchSize`, `concurrency`, virtual threads, or a custom `ExecutorService`. |
+| Worker `run`, start/stop/join/stats | Partial | Java exposes concurrent `runOnce`; lifecycle loops belong in the application for now. |
 | Exception policy retry/fail/raise | Partial | Java retries handler exceptions by default. |
 | Advanced partition scanning/cooldowns | Raw | Use `ClaimDueOptions` directly for partition scans. |
 
@@ -82,7 +82,7 @@ Legend:
 | Spawn children / fanout | Done | `client.spawnChildren`. |
 | Class/decorator workflow style | Raw | Java intentionally starts with registration instead of annotation/proxy instrumentation. |
 | Batch apply optimization | Partial | Low-level many commands exist; worker uniform batching is not automatic yet. |
-| Worker lifecycle start/stop/join/stats | Partial | Java worker is synchronous `runOnce` today. |
+| Worker lifecycle start/stop/join/stats | Partial | Java exposes concurrent `runOnce`; lifecycle loops belong in the application for now. |
 
 ## KV/Data-Structure Commands
 
