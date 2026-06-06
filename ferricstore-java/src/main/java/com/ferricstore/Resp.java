@@ -22,7 +22,13 @@ final class Resp {
     }
 
     static FlowRecord optionalRecord(Object value, Codec codec) {
-        return value == null ? null : record(value, codec);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof List<?> list && list.isEmpty()) {
+            return null;
+        }
+        return record(value, codec);
     }
 
     static FlowRecord record(Object value, Codec codec) {

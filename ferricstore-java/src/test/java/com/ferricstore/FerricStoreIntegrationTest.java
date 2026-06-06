@@ -37,11 +37,14 @@ final class FerricStoreIntegrationTest {
 
             assertFalse(jobs.isEmpty());
             ClaimedItem job = jobs.getFirst();
-            client.complete(CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+            FlowRecord completed = (FlowRecord) client.complete(CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
                 .partitionKey(job.partitionKey())
                 .result(Map.of("ok", true))
+                .ttlMs(60_000)
+                .returnRecord(true)
                 .build());
 
+            assertEquals("completed", completed.state());
             assertEquals("completed", client.get(id, null).state());
         }
     }

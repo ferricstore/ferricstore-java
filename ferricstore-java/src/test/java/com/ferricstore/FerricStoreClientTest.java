@@ -2,6 +2,7 @@ package com.ferricstore;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.charset.StandardCharsets;
@@ -291,6 +292,11 @@ final class FerricStoreClientTest {
     void recordsRejectMalformedResp() {
         FerricStoreException err = assertThrows(FerricStoreException.class, () -> Resp.records("bad", new RawCodec()));
         assertEquals("expected RESP array, got String", err.getMessage());
+    }
+
+    @Test
+    void optionalRecordTreatsEmptyArrayAsMissing() {
+        assertNull(Resp.optionalRecord(List.of(), new RawCodec()));
     }
 
     private static byte[] bytes(String value) {
