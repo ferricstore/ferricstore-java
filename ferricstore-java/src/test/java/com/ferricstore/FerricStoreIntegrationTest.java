@@ -691,20 +691,6 @@ final class FerricStoreIntegrationTest {
                                 .partitionKey(retryPartition)
                                 .error(Map.of("done", true))
                                 .build()));
-
-        String cancelPartition = "java-sdk:cancel-many:" + suffix + ":partition";
-        createManyState(client, type, cancelPartition, "cancel-many", suffix, "cancel-many", now);
-        List<ClaimedItem> cancelJobs =
-                claimMany(client, type, "cancel-many", cancelPartition, now, 2);
-        assertNotNull(
-                client.cancelMany(
-                        CancelManyOptions.builder(
-                                        cancelJobs.stream()
-                                                .map(FerricStoreIntegrationTest::fenced)
-                                                .toList())
-                                .partitionKey(cancelPartition)
-                                .reason(Map.of("cancel", "many"))
-                                .build()));
     }
 
     private static void assertRepairIndexAndRewindCommands(

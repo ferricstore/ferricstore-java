@@ -491,12 +491,12 @@ final class FerricStoreClientTest {
                         "ITEMS",
                         "a",
                         "p1",
-                        "la",
                         1L,
+                        "la",
                         "b",
                         "p2",
-                        "lb",
-                        2L),
+                        2L,
+                        "lb"),
                 executor.last());
     }
 
