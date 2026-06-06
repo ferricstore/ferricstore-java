@@ -24,27 +24,31 @@ final class FerricStoreIntegrationTest {
             assertEquals(Map.of("ok", true), client.kv().get("it:kv:" + suffix));
 
             String id = "it-flow-" + suffix;
+            String partition = "it-partition-" + suffix;
             client.create(CreateOptions.builder(id, "it_order")
                 .state("created")
+                .partitionKey(partition)
                 .payload(Map.of("amount", 42))
                 .idempotent(true)
                 .build());
 
             List<ClaimedItem> jobs = client.claimJobs(ClaimDueOptions.builder("it_order", "it-worker")
                 .state("created")
+                .partitionKey(partition)
                 .limit(1)
                 .leaseMs(30_000)
                 .build());
 
             assertFalse(jobs.isEmpty());
             ClaimedItem job = jobs.getFirst();
+            assertEquals(partition, job.partitionKey());
             client.complete(CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
-                .partitionKey(job.partitionKey())
+                .partitionKey(partition)
                 .result(Map.of("ok", true))
                 .ttlMs(60_000)
                 .build());
 
-            FlowRecord completed = client.get(id, job.partitionKey());
+            FlowRecord completed = client.get(id, partition);
             assertNotNull(completed);
             assertEquals("completed", completed.state());
         }

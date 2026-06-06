@@ -122,6 +122,35 @@ final class FerricStoreClientTest {
     }
 
     @Test
+    void getDecodesPairArrayRecords() {
+        FakeExecutor executor = new FakeExecutor(List.of(
+            List.of(bytes("id"), bytes("flow-1")),
+            Map.entry("type", "order"),
+            List.of("state", "completed"),
+            List.of("partition_key", "p1"),
+            List.of("payload", bytes("payload")),
+            List.of("values", List.of(List.of("attempt", bytes("1")))),
+            List.of("lease_token", "lease"),
+            List.of("fencing_token", 7L),
+            List.of("version", bytes("3"))
+        ));
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        FlowRecord record = client.get("flow-1", "p1");
+
+        assertArgs(List.of("FLOW.GET", "flow-1", "PARTITION", "p1"), executor.last());
+        assertEquals("flow-1", record.id());
+        assertEquals("order", record.type());
+        assertEquals("completed", record.state());
+        assertEquals("p1", record.partitionKey());
+        assertArrayEquals(bytes("payload"), (byte[]) record.payload());
+        assertArrayEquals(bytes("1"), (byte[]) record.values().get("attempt"));
+        assertEquals("lease", record.leaseToken());
+        assertEquals(7L, record.fencingToken());
+        assertEquals(3L, record.version());
+    }
+
+    @Test
     void claimDueBuildsMultiStateAndPartitionScan() {
         FakeExecutor executor = new FakeExecutor(List.of());
         FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
@@ -297,6 +326,11 @@ final class FerricStoreClientTest {
     @Test
     void optionalRecordTreatsEmptyArrayAsMissing() {
         assertNull(Resp.optionalRecord(List.of(), new RawCodec()));
+    }
+
+    @Test
+    void optionalRecordTreatsEmptyMapAsMissing() {
+        assertNull(Resp.optionalRecord(Map.of(), new RawCodec()));
     }
 
     private static byte[] bytes(String value) {

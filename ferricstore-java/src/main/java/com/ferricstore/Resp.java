@@ -28,6 +28,9 @@ final class Resp {
         if (value instanceof List<?> list && list.isEmpty()) {
             return null;
         }
+        if (value instanceof Map<?, ?> map && map.isEmpty()) {
+            return null;
+        }
         return record(value, codec);
     }
 
@@ -99,6 +102,13 @@ final class Resp {
             return mapped;
         }
         if (value instanceof List<?> list) {
+            if (isPairList(list)) {
+                Map<String, Object> mapped = new LinkedHashMap<>();
+                for (Object pair : list) {
+                    mapped.put(string(pairKey(pair)), normalize(pairValue(pair)));
+                }
+                return mapped;
+            }
             if (list.size() % 2 != 0) {
                 throw new FerricStoreException("expected RESP map-like array with even length");
             }
@@ -199,7 +209,17 @@ final class Resp {
             map.forEach((key, item) -> result.put(string(key), normalize(item)));
             return result;
         }
-        if (value instanceof List<?> list && list.size() % 2 == 0) {
+        if (value instanceof List<?> list) {
+            if (isPairList(list)) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                for (Object pair : list) {
+                    result.put(string(pairKey(pair)), normalize(pairValue(pair)));
+                }
+                return result;
+            }
+            if (list.size() % 2 != 0) {
+                return Map.of();
+            }
             Map<String, Object> result = new LinkedHashMap<>();
             for (int i = 0; i < list.size(); i += 2) {
                 result.put(string(list.get(i)), normalize(list.get(i + 1)));
@@ -207,6 +227,28 @@ final class Resp {
             return result;
         }
         return Map.of();
+    }
+
+    private static boolean isPairList(List<?> list) {
+        return !list.isEmpty() && list.stream().allMatch(Resp::isPair);
+    }
+
+    private static boolean isPair(Object value) {
+        return value instanceof Map.Entry<?, ?> || value instanceof List<?> list && list.size() == 2;
+    }
+
+    private static Object pairKey(Object value) {
+        if (value instanceof Map.Entry<?, ?> entry) {
+            return entry.getKey();
+        }
+        return ((List<?>) value).get(0);
+    }
+
+    private static Object pairValue(Object value) {
+        if (value instanceof Map.Entry<?, ?> entry) {
+            return entry.getValue();
+        }
+        return ((List<?>) value).get(1);
     }
 
     private static Object normalize(Object value) {
