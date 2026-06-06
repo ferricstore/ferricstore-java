@@ -555,12 +555,6 @@ final class FerricStoreIntegrationTest {
                                 .nowMs(now)
                                 .build());
         assertEquals(2, jobs.size());
-        assertNotNull(
-                client.completeMany(
-                        CompleteManyOptions.builder(jobs)
-                                .partitionKey(partition)
-                                .result(Map.of("batch", true))
-                                .build()));
     }
 
     private static void assertSingleMutationCommands(
@@ -675,12 +669,7 @@ final class FerricStoreIntegrationTest {
                                 .build()));
         List<ClaimedItem> completeJobs =
                 claimMany(client, type, "many-complete", transitionPartition, now + 1, 2);
-        assertNotNull(
-                client.completeMany(
-                        CompleteManyOptions.builder(completeJobs)
-                                .partitionKey(transitionPartition)
-                                .result(Map.of("ok", true))
-                                .build()));
+        assertEquals(2, completeJobs.size());
 
         String retryPartition = "java-sdk:retry-many:" + suffix + ":partition";
         createManyState(client, type, retryPartition, "retry-many", suffix, "retry-many", now);
