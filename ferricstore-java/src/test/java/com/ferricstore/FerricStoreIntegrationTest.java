@@ -1,0 +1,49 @@
+package com.ferricstore;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
+final class FerricStoreIntegrationTest {
+    @Test
+    void kvAndFlowRoundTripAgainstLocalServer() {
+        assumeTrue("1".equals(System.getenv("FERRICSTORE_INTEGRATION")),
+            "set FERRICSTORE_INTEGRATION=1 to run local FerricStore integration tests");
+
+        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "redis://127.0.0.1:6379/0");
+        try (FerricStoreClient client = FerricStoreClient.connect(url, new JsonCodec())) {
+            String suffix = Long.toString(System.currentTimeMillis(), 36);
+
+            assertTrue(client.kv().set("it:kv:" + suffix, Map.of("ok", true)));
+            assertEquals(Map.of("ok", true), client.kv().get("it:kv:" + suffix));
+
+            String id = "it-flow-" + suffix;
+            client.create(CreateOptions.builder(id, "it_order")
+                .state("created")
+                .payload(Map.of("amount", 42))
+                .idempotent(true)
+                .build());
+
+            List<FlowRecord> jobs = client.claimDue(ClaimDueOptions.builder("it_order", "it-worker")
+                .state("created")
+                .payload(true)
+                .limit(1)
+                .leaseMs(30_000)
+                .build());
+
+            assertFalse(jobs.isEmpty());
+            FlowRecord job = jobs.getFirst();
+            client.complete(CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                .partitionKey(job.partitionKey())
+                .result(Map.of("ok", true))
+                .build());
+
+            assertEquals("completed", client.get(id, null).state());
+        }
+    }
+}

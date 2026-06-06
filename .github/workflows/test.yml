@@ -1,0 +1,58 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit java-${{ matrix.java-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java-version: [21, 25]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java-version }}
+          cache: maven
+      - run: mvn -B test
+
+  package:
+    name: package dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - run: mvn -B -DskipTests package
+
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - run: docker compose up -d ferricstore
+      - run: scripts/wait-for-ferricstore.sh
+      - run: mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test
+        env:
+          FERRICSTORE_INTEGRATION: "1"
+      - if: always()
+        run: docker compose logs ferricstore
+      - if: always()
+        run: docker compose down -v
