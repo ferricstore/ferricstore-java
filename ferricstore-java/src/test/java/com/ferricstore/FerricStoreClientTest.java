@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -219,6 +220,30 @@ final class FerricStoreClientTest {
         assertEquals("lease", record.leaseToken());
         assertEquals(7L, record.fencingToken());
         assertEquals(3L, record.version());
+    }
+
+    @Test
+    void flowRecordKeepsNullableMapsImmutable() {
+        FlowRecord record =
+                new FlowRecord(
+                        "flow-1",
+                        "order",
+                        "completed",
+                        "p1",
+                        null,
+                        null,
+                        1L,
+                        2L,
+                        null,
+                        null,
+                        null,
+                        Collections.singletonMap("result", null),
+                        null,
+                        Collections.singletonMap("ttl_ms", null));
+
+        assertNull(record.values().get("result"));
+        assertNull(record.raw().get("ttl_ms"));
+        assertThrows(UnsupportedOperationException.class, () -> record.values().put("x", "y"));
     }
 
     @Test
