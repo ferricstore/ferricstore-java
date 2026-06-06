@@ -571,6 +571,46 @@ final class FerricStoreClientTest {
     }
 
     @Test
+    void rewindReturnRecordLoadsRecordWithoutReturnOption() {
+        Map<Object, Object> record =
+                Resp.testMap(
+                        "id", "flow-1",
+                        "type", "order",
+                        "state", "queued",
+                        "partition_key", "p1",
+                        "fencing_token", 7L,
+                        "version", 3L);
+        FakeExecutor executor = new FakeExecutor("OK", record);
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        FlowRecord rewound =
+                (FlowRecord)
+                        client.rewind(
+                                "flow-1", "event-1", "p1", "completed", 120L, "reason", 100L, true);
+
+        assertArgs(
+                List.of(
+                        "FLOW.REWIND",
+                        "flow-1",
+                        "TO_EVENT",
+                        "event-1",
+                        "NOW",
+                        100L,
+                        "PARTITION",
+                        "p1",
+                        "EXPECT_STATE",
+                        "completed",
+                        "RUN_AT",
+                        120L,
+                        "REASON_REF",
+                        "reason"),
+                executor.calls.get(0));
+        assertArgs(List.of("FLOW.GET", "flow-1", "PARTITION", "p1"), executor.calls.get(1));
+        assertEquals("flow-1", rewound.id());
+        assertEquals("queued", rewound.state());
+    }
+
+    @Test
     void recordsRejectMalformedResp() {
         FerricStoreException err =
                 assertThrows(FerricStoreException.class, () -> Resp.records("bad", new RawCodec()));
@@ -605,17 +645,19 @@ final class FerricStoreClientTest {
     }
 
     private static final class FakeExecutor implements RedisExecutor {
-        private final Object response;
+        private final List<Object> responses = new ArrayList<>();
         private final List<List<Object>> calls = new ArrayList<>();
 
-        private FakeExecutor(Object response) {
-            this.response = response;
+        private FakeExecutor(Object response, Object... nextResponses) {
+            responses.add(response);
+            Collections.addAll(responses, nextResponses);
         }
 
         @Override
         public Object execute(List<Object> args) {
             calls.add(List.copyOf(args));
-            return response;
+            int index = Math.min(calls.size() - 1, responses.size() - 1);
+            return responses.get(index);
         }
 
         private List<Object> last() {

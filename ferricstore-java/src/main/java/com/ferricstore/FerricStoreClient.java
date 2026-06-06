@@ -565,9 +565,16 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "EXPECT_STATE", expectState);
         append(cmd, "RUN_AT", runAtMs);
         append(cmd, "REASON_REF", reasonRef);
-        appendReturnRecord(cmd, returnRecord);
         Object response = command(cmd);
-        return returnRecord ? Resp.optionalRecord(response, codec) : response;
+        if (!returnRecord) {
+            return response;
+        }
+        FlowRecord record = get(id, partitionKey);
+        if (record == null) {
+            throw new FerricStoreException(
+                    "FLOW command succeeded but record " + id + " was not found");
+        }
+        return record;
     }
 
     public List<FlowRecord> terminals(String type, String state, String partitionKey, int count) {

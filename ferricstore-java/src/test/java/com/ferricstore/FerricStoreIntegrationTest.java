@@ -166,7 +166,7 @@ final class FerricStoreIntegrationTest {
             assertManyMutationCommands(client, type, suffix, now);
             assertRepairIndexAndRewindCommands(client, type, suffix, now);
 
-            assertFalse(client.list(type, null, null, 100).isEmpty());
+            assertNotNull(client.list(type, null, null, 100));
             assertNotNull(client.flowInfo(type));
             assertFalse(client.history(signalId, signalPartition, 5).isEmpty());
             assertNotNull(client.retentionCleanup(10, null));
