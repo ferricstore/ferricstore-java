@@ -660,7 +660,7 @@ final class FerricStoreIntegrationTest {
         assertNotNull(
                 client.transitionMany(
                         TransitionManyOptions.builder(
-                                        "many-transition",
+                                        manyJobs.getFirst().state(),
                                         "many-complete",
                                         manyJobs.stream()
                                                 .map(FerricStoreIntegrationTest::fenced)

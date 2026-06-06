@@ -993,10 +993,10 @@ public final class FerricStoreClient implements AutoCloseable {
             if (partitionKey == null) {
                 cmd.add(item.partitionKey());
             }
+            cmd.add(item.fencingToken());
             if (includeLease) {
                 cmd.add(item.leaseToken());
             }
-            cmd.add(item.fencingToken());
         }
     }
 
