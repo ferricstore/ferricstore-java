@@ -81,6 +81,7 @@ Legend:
 | Lazy value refs | Done | `ctx.value`. |
 | Spawn children / fanout | Done | `client.spawnChildren`. |
 | Class/decorator workflow style | Raw | Java intentionally starts with registration instead of annotation/proxy instrumentation. |
+| Spring Statemachine graph validation | Done | Optional `ferricstore-spring-statemachine` adapter; FerricStore remains persistence. |
 | Batch apply optimization | Partial | Low-level many commands exist; worker uniform batching is not automatic yet. |
 | Worker lifecycle start/stop/join/stats | Partial | Java exposes concurrent `runOnce`; lifecycle loops belong in the application for now. |
 

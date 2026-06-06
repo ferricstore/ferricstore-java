@@ -15,6 +15,7 @@
 
   <modules>
     <module>ferricstore-java</module>
+    <module>ferricstore-spring-statemachine</module>
     <module>ferricstore-spring-boot-starter</module>
     <module>ferricstore-examples</module>
   </modules>
@@ -50,6 +51,7 @@
     <jedis.version>7.5.2</jedis.version>
     <junit.version>6.1.0</junit.version>
     <spring-boot.version>4.0.6</spring-boot.version>
+    <spring-statemachine.version>4.0.1</spring-statemachine.version>
   </properties>
 
   <dependencyManagement>

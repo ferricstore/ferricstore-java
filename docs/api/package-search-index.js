@@ -1,1 +1,1 @@
-packageSearchIndex = [{"l":"All Packages","u":"allpackages-index.html"},{"l":"com.ferricstore"},{"l":"com.ferricstore.examples"},{"l":"com.ferricstore.spring"}];updateSearchResults();
+packageSearchIndex = [{"l":"All Packages","u":"allpackages-index.html"},{"l":"com.ferricstore"},{"l":"com.ferricstore.examples"},{"l":"com.ferricstore.spring"},{"l":"com.ferricstore.spring.statemachine"}];updateSearchResults();

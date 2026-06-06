@@ -12,6 +12,7 @@ FLOW.CREATE -> FLOW.CLAIM_DUE -> handler -> FLOW.TRANSITION / COMPLETE / FAIL / 
 
 - `com.ferricstore:ferricstore-java` - core SDK and RESP command helpers.
 - `com.ferricstore:ferricstore-spring-boot-starter` - Spring Boot auto-configuration.
+- `com.ferricstore:ferricstore-spring-statemachine` - optional Spring Statemachine adapter for workflow graph validation.
 - `ferricstore-examples` - compile-checked example programs.
 
 ## Maven
@@ -30,6 +31,16 @@ Spring Boot:
 <dependency>
   <groupId>com.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+</dependency>
+```
+
+Optional Spring Statemachine adapter:
+
+```xml
+<dependency>
+  <groupId>com.ferricstore</groupId>
+  <artifactId>ferricstore-spring-statemachine</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -100,6 +111,37 @@ Handlers return explicit outcomes:
 - `Outcomes.fail(error)`
 
 FerricFlow does not replay Java handler code. Workers claim durable state, run normal Java code, then write the next state through the FerricFlow API.
+
+## Spring Statemachine Adapter
+
+The optional Spring Statemachine module uses Spring Statemachine for graph validation only. FerricStore remains the only persistence layer for workflow state, leases, retries, history, and terminal status.
+
+```java
+FerricFlowStateMachine graph = FerricFlowStateMachine.builder(orderStateMachineFactory).build();
+
+Workflow order = new WorkflowClient(client).workflow("order", "created")
+    .state("created", ctx -> graph.apply(ctx, "CHARGE"))
+    .state("charged", ctx -> graph.apply(ctx, "COMPLETE", Map.of("ok", true)));
+
+order.worker("order-worker-1", List.of("created", "charged"))
+    .concurrency(64)
+    .virtualThreads()
+    .runOnce();
+```
+
+Spring Statemachine actions and guards can still use FerricStore APIs through message headers:
+
+```java
+action(context -> {
+    FerricStoreClient store = FerricStoreStateMachineContext.client(context);
+    WorkflowContext workflow = FerricStoreStateMachineContext.workflowContext(context);
+    store.kv().set("order:" + workflow.id(), Map.of("charged", true));
+});
+```
+
+The adapter restores the Spring machine from `WorkflowContext.state()` on every job and writes the result back through FerricFlow outcomes. Do not configure Spring Statemachine persistence as the source of truth for these workflows.
+
+With Spring Boot, define one `StateMachineFactory<String, String>` bean and include both the starter and statemachine adapter; the starter exposes a `FerricFlowStateMachine` bean for DI.
 
 ## Low-Level Flow Commands
 

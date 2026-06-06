@@ -1,1 +1,2 @@
 com.ferricstore.spring.FerricStoreAutoConfiguration
+com.ferricstore.spring.FerricStoreStateMachineAutoConfiguration

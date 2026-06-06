@@ -24,5 +24,10 @@
       <artifactId>ferricstore-java</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>com.ferricstore</groupId>
+      <artifactId>ferricstore-spring-statemachine</artifactId>
+      <version>${project.version}</version>
+    </dependency>
   </dependencies>
 </project>

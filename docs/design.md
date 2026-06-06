@@ -19,6 +19,7 @@ return Outcomes.fail(Map.of("reason", "bad input"));
 - Provides `WorkflowClient` for explicit state-machine workflows.
 - Provides store helpers for KV, hashes, lists, sets, sorted sets, streams, JSON, and probabilistic structures.
 - Provides a Spring Boot starter with conditional beans for `Codec`, `FerricStoreClient`, `QueueClient`, and `WorkflowClient`.
+- Provides an optional Spring Statemachine adapter for validating state graphs while keeping FerricStore as the only workflow persistence layer.
 
 ## What The SDK Does Not Do
 
@@ -42,6 +43,18 @@ Those projects are useful references for Java ergonomics. FerricFlow's runtime m
 ## Spring Boot Shape
 
 The starter follows Spring Boot's auto-configuration model: it uses `@AutoConfiguration`, `@ConditionalOnMissingBean`, and `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`. Spring's own guide recommends this imports file for external starter jars and explains that auto-configured beans should back away when users define their own beans: https://docs.spring.io/spring-boot/4.0-SNAPSHOT/reference/features/developing-auto-configuration.html
+
+## Spring Statemachine Adapter
+
+`ferricstore-spring-statemachine` is optional. It lets Spring applications define states, events, guards, and actions with Spring Statemachine, then use `FerricFlowStateMachine` inside a normal FerricFlow `WorkflowWorker`.
+
+FerricStore remains the source of truth. The adapter restores the Spring machine from `WorkflowContext.state()` for each claimed job, sends one event, and converts the accepted target state into a FerricFlow outcome. Spring Statemachine persistence should not be configured as workflow persistence for this adapter.
+
+Spring actions and guards receive the `FerricStoreClient`, `WorkflowContext`, and `FlowRecord` in message headers, so they can still use KV, JSON, streams, value refs, or raw commands.
+
+When the Boot starter and statemachine adapter are both present, a single Spring `StateMachineFactory<String, String>` bean is enough for auto-configuration to expose a `FerricFlowStateMachine` bean.
+
+Spring Statemachine reference: https://docs.spring.io/spring-statemachine/docs/current/reference/
 
 ## Throughput-Oriented Choices
 
