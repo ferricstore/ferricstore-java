@@ -22,10 +22,20 @@ public final class Workflow {
     }
 
     public Object start(String id, Object payload) {
-        return client.create(CreateOptions.builder(id, type).state(initialState).payload(payload).idempotent(true).build());
+        return client.create(
+                CreateOptions.builder(id, type)
+                        .state(initialState)
+                        .payload(payload)
+                        .idempotent(true)
+                        .build());
     }
 
     public WorkflowWorker worker(String worker, List<String> states) {
-        return new WorkflowWorker(client, type, worker, states == null ? List.copyOf(handlers.keySet()) : states, handlers);
+        return new WorkflowWorker(
+                client,
+                type,
+                worker,
+                states == null ? List.copyOf(handlers.keySet()) : states,
+                handlers);
     }
 }

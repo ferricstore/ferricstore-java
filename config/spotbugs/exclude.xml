@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+  <!-- Public DTO records defensively copy lists/maps in compact constructors. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2" />
+    <Or>
+      <Class name="~com\.ferricstore\..*Options" />
+      <Class name="com.ferricstore.ChildSpec" />
+      <Class name="com.ferricstore.CreateItem" />
+      <Class name="com.ferricstore.FlowRecord" />
+      <Class name="com.ferricstore.RateLimitResult" />
+    </Or>
+  </Match>
+
+  <!-- These classes intentionally hold or return long-lived SDK dependencies/helper handles. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2" />
+    <Or>
+      <Class name="com.ferricstore.FerricStoreClient" />
+      <Class name="com.ferricstore.JedisRedisExecutor" />
+      <Class name="com.ferricstore.JsonCodec" />
+      <Class name="com.ferricstore.QueueClient" />
+      <Class name="com.ferricstore.WorkflowClient" />
+      <Class name="com.ferricstore.WorkflowContext" />
+    </Or>
+  </Match>
+
+  <!-- Null payloads are encoded as absent FerricStore values, not empty byte arrays. -->
+  <Match>
+    <Bug pattern="PZLA_PREFER_ZERO_LENGTH_ARRAYS" />
+    <Or>
+      <Class name="com.ferricstore.JsonCodec" />
+      <Class name="com.ferricstore.RawCodec" />
+      <Class name="com.ferricstore.Resp" />
+    </Or>
+  </Match>
+
+  <!-- Queue/workflow handlers are user extension points and may throw arbitrary failures. -->
+  <Match>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION" />
+    <Or>
+      <Class name="com.ferricstore.QueueHandler" />
+      <Class name="com.ferricstore.WorkflowHandler" />
+    </Or>
+  </Match>
+
+  <!-- The raw executor maps Jedis runtime failures into FerricStore exceptions. -->
+  <Match>
+    <Bug pattern="THROWS_METHOD_THROWS_RUNTIMEEXCEPTION" />
+    <Class name="com.ferricstore.JedisRedisExecutor" />
+  </Match>
+</FindBugsFilter>

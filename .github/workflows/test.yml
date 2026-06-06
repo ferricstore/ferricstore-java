@@ -25,6 +25,18 @@ jobs:
           cache: maven
       - run: mvn -B test
 
+  quality:
+    name: quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - run: mvn -B -P quality verify
+
   package:
     name: package dry-run
     runs-on: ubuntu-latest

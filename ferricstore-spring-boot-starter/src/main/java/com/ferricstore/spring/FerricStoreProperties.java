@@ -4,13 +4,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "ferricstore")
 public class FerricStoreProperties {
-    /**
-     * Redis-compatible FerricStore URL used by the SDK client.
-     */
+    /** Redis-compatible FerricStore URL used by the SDK client. */
     private String url = "redis://127.0.0.1:6379/0";
-    /**
-     * Codec used for payloads, results, and named values.
-     */
+
+    /** Codec used for payloads, results, and named values. */
     private CodecMode codec = CodecMode.RAW;
 
     public String getUrl() {

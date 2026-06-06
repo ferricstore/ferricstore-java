@@ -1,12 +1,13 @@
 package com.ferricstore;
 
+import java.util.Locale;
+
 public final class FerricStoreErrors {
-    private FerricStoreErrors() {
-    }
+    private FerricStoreErrors() {}
 
     static RuntimeException map(Throwable error) {
         String message = error.getMessage() == null ? error.toString() : error.getMessage();
-        String lower = message.toLowerCase();
+        String lower = message.toLowerCase(Locale.ROOT);
         if (lower.contains("flow already exists")) {
             return new FlowAlreadyExistsException(message, error);
         }

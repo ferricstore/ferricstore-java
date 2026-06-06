@@ -5,8 +5,7 @@ import java.util.List;
 import java.util.Map;
 
 final class CommandArgs {
-    private CommandArgs() {
-    }
+    private CommandArgs() {}
 
     static List<Object> args(Object... values) {
         List<Object> args = new ArrayList<>(values.length);
@@ -41,20 +40,23 @@ final class CommandArgs {
         }
     }
 
-    static void appendNamedValues(List<Object> args, Codec codec, Map<String, ?> values, Map<String, String> valueRefs) {
+    static void appendNamedValues(
+            List<Object> args, Codec codec, Map<String, ?> values, Map<String, String> valueRefs) {
         if (values != null) {
-            values.forEach((name, value) -> {
-                args.add("VALUE");
-                args.add(name);
-                args.add(codec.encode(value));
-            });
+            values.forEach(
+                    (name, value) -> {
+                        args.add("VALUE");
+                        args.add(name);
+                        args.add(codec.encode(value));
+                    });
         }
         if (valueRefs != null) {
-            valueRefs.forEach((name, ref) -> {
-                args.add("VALUE_REF");
-                args.add(name);
-                args.add(ref);
-            });
+            valueRefs.forEach(
+                    (name, ref) -> {
+                        args.add("VALUE_REF");
+                        args.add(name);
+                        args.add(ref);
+                    });
         }
     }
 

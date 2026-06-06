@@ -19,15 +19,14 @@ public final class QueueWorker {
     }
 
     private QueueWorker(
-        FerricStoreClient client,
-        String type,
-        String state,
-        String worker,
-        int batchSize,
-        int concurrency,
-        boolean virtualThreads,
-        ExecutorService executor
-    ) {
+            FerricStoreClient client,
+            String type,
+            String state,
+            String worker,
+            int batchSize,
+            int concurrency,
+            boolean virtualThreads,
+            ExecutorService executor) {
         this.client = client;
         this.type = type;
         this.state = state;
@@ -40,12 +39,14 @@ public final class QueueWorker {
 
     public QueueWorker batchSize(int batchSize) {
         WorkerExecutors.requirePositive("batchSize", batchSize);
-        return new QueueWorker(client, type, state, worker, batchSize, concurrency, virtualThreads, executor);
+        return new QueueWorker(
+                client, type, state, worker, batchSize, concurrency, virtualThreads, executor);
     }
 
     public QueueWorker concurrency(int concurrency) {
         WorkerExecutors.requirePositive("concurrency", concurrency);
-        return new QueueWorker(client, type, state, worker, batchSize, concurrency, virtualThreads, executor);
+        return new QueueWorker(
+                client, type, state, worker, batchSize, concurrency, virtualThreads, executor);
     }
 
     public QueueWorker virtualThreads() {
@@ -56,18 +57,26 @@ public final class QueueWorker {
         if (executor == null) {
             throw new IllegalArgumentException("executor cannot be null");
         }
-        return new QueueWorker(client, type, state, worker, batchSize, concurrency, false, executor);
+        return new QueueWorker(
+                client, type, state, worker, batchSize, concurrency, false, executor);
     }
 
     public QueueWorkerResult runOnce(QueueHandler handler) {
-        List<FlowRecord> jobs = client.claimDue(ClaimDueOptions.builder(type, worker).state(state).payload(true).limit(batchSize).build());
-        List<JobResult> results = WorkerExecutors.run(jobs, concurrency, virtualThreads, executor, job -> apply(job, handler));
+        List<FlowRecord> jobs =
+                client.claimDue(
+                        ClaimDueOptions.builder(type, worker)
+                                .state(state)
+                                .payload(true)
+                                .limit(batchSize)
+                                .build());
+        List<JobResult> results =
+                WorkerExecutors.run(
+                        jobs, concurrency, virtualThreads, executor, job -> apply(job, handler));
         return new QueueWorkerResult(
-            jobs.size(),
-            count(results, JobResult.COMPLETED),
-            count(results, JobResult.RETRIED),
-            count(results, JobResult.FAILED)
-        );
+                jobs.size(),
+                count(results, JobResult.COMPLETED),
+                count(results, JobResult.RETRIED),
+                count(results, JobResult.FAILED));
     }
 
     private JobResult apply(FlowRecord job, QueueHandler handler) {
@@ -75,24 +84,39 @@ public final class QueueWorker {
             Object result = handler.handle(job);
             Outcome outcome = result instanceof Outcome typed ? typed : Outcomes.complete(result);
             if (outcome instanceof CompleteOutcome complete) {
-                client.complete(CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
-                    .partitionKey(job.partitionKey()).result(complete.result()).payload(complete.payload()).build());
+                client.complete(
+                        CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                                .partitionKey(job.partitionKey())
+                                .result(complete.result())
+                                .payload(complete.payload())
+                                .build());
                 return JobResult.COMPLETED;
             }
             if (outcome instanceof RetryOutcome retry) {
-                client.retry(RetryOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
-                    .partitionKey(job.partitionKey()).error(retry.error()).payload(retry.payload()).build());
+                client.retry(
+                        RetryOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                                .partitionKey(job.partitionKey())
+                                .error(retry.error())
+                                .payload(retry.payload())
+                                .build());
                 return JobResult.RETRIED;
             }
             if (outcome instanceof FailOutcome fail) {
-                client.fail(FailOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
-                    .partitionKey(job.partitionKey()).error(fail.error()).payload(fail.payload()).build());
+                client.fail(
+                        FailOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                                .partitionKey(job.partitionKey())
+                                .error(fail.error())
+                                .payload(fail.payload())
+                                .build());
                 return JobResult.FAILED;
             }
             throw new FerricStoreException("Queue handlers cannot return transition outcomes");
         } catch (Exception e) {
-            client.retry(RetryOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
-                .partitionKey(job.partitionKey()).error(errorPayload(e)).build());
+            client.retry(
+                    RetryOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                            .partitionKey(job.partitionKey())
+                            .error(errorPayload(e))
+                            .build());
             return JobResult.RETRIED;
         }
     }

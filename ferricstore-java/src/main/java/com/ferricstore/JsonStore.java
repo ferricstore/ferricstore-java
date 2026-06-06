@@ -27,7 +27,10 @@ public final class JsonStore {
         }
     }
 
-    public long del(String key, String path) { return Resp.number(client.command("JSON.DEL", key, path)); }
+    public long del(String key, String path) {
+        return Resp.number(client.command("JSON.DEL", key, path));
+    }
+
     public List<Object> mget(List<String> keys, String path) {
         List<Object> args = CommandArgs.args("JSON.MGET");
         args.addAll(keys);

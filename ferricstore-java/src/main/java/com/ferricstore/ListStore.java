@@ -9,14 +9,32 @@ public final class ListStore {
         this.client = client;
     }
 
-    public long lpush(String key, Object... elements) { return push("LPUSH", key, elements); }
-    public long rpush(String key, Object... elements) { return push("RPUSH", key, elements); }
-    public Object lpop(String key) { return decode(client.command("LPOP", key)); }
-    public Object rpop(String key) { return decode(client.command("RPOP", key)); }
-    public List<Object> lrange(String key, long start, long stop) {
-        return Resp.list(client.command("LRANGE", key, start, stop)).stream().map(this::decode).toList();
+    public long lpush(String key, Object... elements) {
+        return push("LPUSH", key, elements);
     }
-    public long llen(String key) { return Resp.number(client.command("LLEN", key)); }
+
+    public long rpush(String key, Object... elements) {
+        return push("RPUSH", key, elements);
+    }
+
+    public Object lpop(String key) {
+        return decode(client.command("LPOP", key));
+    }
+
+    public Object rpop(String key) {
+        return decode(client.command("RPOP", key));
+    }
+
+    public List<Object> lrange(String key, long start, long stop) {
+        return Resp.list(client.command("LRANGE", key, start, stop)).stream()
+                .map(this::decode)
+                .toList();
+    }
+
+    public long llen(String key) {
+        return Resp.number(client.command("LLEN", key));
+    }
+
     public Object blpop(List<String> keys, long timeoutSeconds) {
         List<Object> args = CommandArgs.args("BLPOP");
         args.addAll(keys);

@@ -14,6 +14,10 @@
   <name>FerricStore Spring Statemachine Adapter</name>
   <description>Optional Spring Statemachine integration for FerricFlow workflows.</description>
 
+  <properties>
+    <spotbugs.skip>false</spotbugs.skip>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>com.ferricstore</groupId>

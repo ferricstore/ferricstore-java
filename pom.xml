@@ -52,6 +52,16 @@
     <junit.version>6.1.0</junit.version>
     <spring-boot.version>4.0.6</spring-boot.version>
     <spring-statemachine.version>4.0.1</spring-statemachine.version>
+    <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
+    <checkstyle.version>13.5.0</checkstyle.version>
+    <maven-pmd-plugin.version>3.28.0</maven-pmd-plugin.version>
+    <spotbugs-maven-plugin.version>4.9.8.3</spotbugs-maven-plugin.version>
+    <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
+    <spotless-maven-plugin.version>3.6.0</spotless-maven-plugin.version>
+    <google-java-format.version>1.35.0</google-java-format.version>
+    <plexus-compiler-javac-errorprone.version>2.16.2</plexus-compiler-javac-errorprone.version>
+    <error-prone.version>2.49.0</error-prone.version>
+    <spotbugs.skip>true</spotbugs.skip>
   </properties>
 
   <dependencyManagement>
@@ -166,6 +176,166 @@
           <plugin>
             <groupId>org.sonatype.central</groupId>
             <artifactId>central-publishing-maven-plugin</artifactId>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>quality</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <configuration>
+              <compilerId>javac-with-errorprone</compilerId>
+              <forceLegacyJavacApi>true</forceLegacyJavacApi>
+              <showWarnings>true</showWarnings>
+              <compilerArgs>
+                <arg>-Xlint:all,-processing</arg>
+                <arg>-Werror</arg>
+              </compilerArgs>
+            </configuration>
+            <dependencies>
+              <dependency>
+                <groupId>org.codehaus.plexus</groupId>
+                <artifactId>plexus-compiler-javac-errorprone</artifactId>
+                <version>${plexus-compiler-javac-errorprone.version}</version>
+              </dependency>
+              <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_core</artifactId>
+                <version>${error-prone.version}</version>
+              </dependency>
+            </dependencies>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <version>${maven-enforcer-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>enforce-build</id>
+                <phase>validate</phase>
+                <goals>
+                  <goal>enforce</goal>
+                </goals>
+                <configuration>
+                  <fail>true</fail>
+                  <rules>
+                    <requireMavenVersion>
+                      <version>[3.9.0,)</version>
+                    </requireMavenVersion>
+                    <requireJavaVersion>
+                      <version>[21,)</version>
+                    </requireJavaVersion>
+                    <banDuplicatePomDependencyVersions />
+                    <dependencyConvergence />
+                  </rules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>com.diffplug.spotless</groupId>
+            <artifactId>spotless-maven-plugin</artifactId>
+            <version>${spotless-maven-plugin.version}</version>
+            <configuration>
+              <java>
+                <googleJavaFormat>
+                  <version>${google-java-format.version}</version>
+                  <style>AOSP</style>
+                </googleJavaFormat>
+                <formatAnnotations />
+                <removeUnusedImports />
+              </java>
+            </configuration>
+            <executions>
+              <execution>
+                <id>spotless-check</id>
+                <phase>validate</phase>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-checkstyle-plugin</artifactId>
+            <version>${maven-checkstyle-plugin.version}</version>
+            <dependencies>
+              <dependency>
+                <groupId>com.puppycrawl.tools</groupId>
+                <artifactId>checkstyle</artifactId>
+                <version>${checkstyle.version}</version>
+              </dependency>
+            </dependencies>
+            <configuration>
+              <configLocation>${maven.multiModuleProjectDirectory}/config/checkstyle/checkstyle.xml</configLocation>
+              <consoleOutput>true</consoleOutput>
+              <failsOnError>true</failsOnError>
+              <failOnViolation>true</failOnViolation>
+              <includeTestSourceDirectory>true</includeTestSourceDirectory>
+            </configuration>
+            <executions>
+              <execution>
+                <id>checkstyle</id>
+                <phase>validate</phase>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-pmd-plugin</artifactId>
+            <version>${maven-pmd-plugin.version}</version>
+            <configuration>
+              <failOnViolation>true</failOnViolation>
+              <includeTests>true</includeTests>
+              <linkXRef>false</linkXRef>
+              <minimumTokens>150</minimumTokens>
+              <printFailingErrors>true</printFailingErrors>
+              <rulesets>
+                <ruleset>${maven.multiModuleProjectDirectory}/config/pmd/ruleset.xml</ruleset>
+              </rulesets>
+              <targetJdk>${java.version}</targetJdk>
+            </configuration>
+            <executions>
+              <execution>
+                <id>pmd-check</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>check</goal>
+                  <goal>cpd-check</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-maven-plugin</artifactId>
+            <version>${spotbugs-maven-plugin.version}</version>
+            <configuration>
+              <effort>Max</effort>
+              <excludeFilterFile>${maven.multiModuleProjectDirectory}/config/spotbugs/exclude.xml</excludeFilterFile>
+              <threshold>Low</threshold>
+              <failOnError>true</failOnError>
+              <includeTests>true</includeTests>
+              <skip>${spotbugs.skip}</skip>
+              <xmlOutput>true</xmlOutput>
+            </configuration>
+            <executions>
+              <execution>
+                <id>spotbugs-check</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+              </execution>
+            </executions>
           </plugin>
         </plugins>
       </build>

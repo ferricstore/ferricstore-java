@@ -8,15 +8,15 @@ import java.util.List;
 import java.util.Map;
 
 final class Resp {
-    private Resp() {
-    }
+    private Resp() {}
 
     static List<FlowRecord> records(Object value, Codec codec) {
         if (value == null) {
             return List.of();
         }
         if (!(value instanceof List<?> list)) {
-            throw new FerricStoreException("expected RESP array, got " + value.getClass().getSimpleName());
+            throw new FerricStoreException(
+                    "expected RESP array, got " + value.getClass().getSimpleName());
         }
         return list.stream().map(item -> record(item, codec)).toList();
     }
@@ -37,21 +37,20 @@ final class Resp {
     static FlowRecord record(Object value, Codec codec) {
         Map<String, Object> map = map(value);
         return new FlowRecord(
-            string(map.get("id")),
-            string(map.get("type")),
-            string(map.get("state")),
-            optionalString(map.get("partition_key")),
-            decode(codec, map.get("payload")),
-            optionalString(map.get("lease_token")),
-            number(map.get("fencing_token")),
-            number(map.get("version")),
-            optionalString(map.get("parent_flow_id")),
-            optionalString(map.get("root_flow_id")),
-            optionalString(map.get("correlation_id")),
-            decodeValueMap(codec, map.get("values")),
-            stringObjectMap(map.get("value_refs")),
-            map
-        );
+                string(map.get("id")),
+                string(map.get("type")),
+                string(map.get("state")),
+                optionalString(map.get("partition_key")),
+                decode(codec, map.get("payload")),
+                optionalString(map.get("lease_token")),
+                number(map.get("fencing_token")),
+                number(map.get("version")),
+                optionalString(map.get("parent_flow_id")),
+                optionalString(map.get("root_flow_id")),
+                optionalString(map.get("correlation_id")),
+                decodeValueMap(codec, map.get("values")),
+                stringObjectMap(map.get("value_refs")),
+                map);
     }
 
     static List<ClaimedItem> claimedItems(Object value) {
@@ -59,7 +58,8 @@ final class Resp {
             return List.of();
         }
         if (!(value instanceof List<?> list)) {
-            throw new FerricStoreException("expected RESP array, got " + value.getClass().getSimpleName());
+            throw new FerricStoreException(
+                    "expected RESP array, got " + value.getClass().getSimpleName());
         }
         return list.stream().map(Resp::claimedItem).toList();
     }
@@ -67,30 +67,31 @@ final class Resp {
     static ClaimedItem claimedItem(Object value) {
         if (value instanceof List<?> list) {
             if (list.size() < 4) {
-                throw new FerricStoreException("expected claimed item array with at least 4 fields");
+                throw new FerricStoreException(
+                        "expected claimed item array with at least 4 fields");
             }
             return new ClaimedItem(
-                string(list.get(0)),
-                string(list.get(2)),
-                number(list.get(3)),
-                optionalString(list.get(1)),
-                "",
-                "running",
-                list.size() > 4 ? optionalString(list.get(4)) : null,
-                null
-            );
+                    string(list.get(0)),
+                    string(list.get(2)),
+                    number(list.get(3)),
+                    optionalString(list.get(1)),
+                    "",
+                    "running",
+                    list.size() > 4 ? optionalString(list.get(4)) : null,
+                    null);
         }
         Map<String, Object> map = map(value);
         return new ClaimedItem(
-            string(map.get("id")),
-            string(map.get("lease_token")),
-            number(map.get("fencing_token")),
-            optionalString(map.get("partition_key")),
-            string(map.get("type")),
-            optionalString(map.get("state")) == null ? "running" : optionalString(map.get("state")),
-            optionalString(map.get("run_state")),
-            map.get("payload")
-        );
+                string(map.get("id")),
+                string(map.get("lease_token")),
+                number(map.get("fencing_token")),
+                optionalString(map.get("partition_key")),
+                string(map.get("type")),
+                optionalString(map.get("state")) == null
+                        ? "running"
+                        : optionalString(map.get("state")),
+                optionalString(map.get("run_state")),
+                map.get("payload"));
     }
 
     static Map<String, Object> map(Object value) {
@@ -118,7 +119,8 @@ final class Resp {
             }
             return mapped;
         }
-        throw new FerricStoreException("expected RESP map, got " + value.getClass().getSimpleName());
+        throw new FerricStoreException(
+                "expected RESP map, got " + value.getClass().getSimpleName());
     }
 
     static String string(Object value) {
@@ -195,7 +197,10 @@ final class Resp {
             return Map.of();
         }
         Map<String, Object> decoded = new LinkedHashMap<>();
-        raw.forEach((name, item) -> decoded.put(name, item instanceof byte[] bytes ? codec.decode(bytes) : item));
+        raw.forEach(
+                (name, item) ->
+                        decoded.put(
+                                name, item instanceof byte[] bytes ? codec.decode(bytes) : item));
         return decoded;
     }
 
@@ -234,7 +239,8 @@ final class Resp {
     }
 
     private static boolean isPair(Object value) {
-        return value instanceof Map.Entry<?, ?> || value instanceof List<?> list && list.size() == 2;
+        return value instanceof Map.Entry<?, ?>
+                || value instanceof List<?> list && list.size() == 2;
     }
 
     private static Object pairKey(Object value) {

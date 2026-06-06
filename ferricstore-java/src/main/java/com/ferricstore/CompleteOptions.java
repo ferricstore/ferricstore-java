@@ -4,18 +4,22 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 public record CompleteOptions(
-    String id,
-    String leaseToken,
-    long fencingToken,
-    String partitionKey,
-    Object result,
-    Object payload,
-    Long ttlMs,
-    long nowMs,
-    Map<String, ?> values,
-    Map<String, String> valueRefs,
-    boolean returnRecord
-) {
+        String id,
+        String leaseToken,
+        long fencingToken,
+        String partitionKey,
+        Object result,
+        Object payload,
+        Long ttlMs,
+        long nowMs,
+        Map<String, ?> values,
+        Map<String, String> valueRefs,
+        boolean returnRecord) {
+    public CompleteOptions {
+        values = ImmutableCopies.map(values);
+        valueRefs = ImmutableCopies.map(valueRefs);
+    }
+
     public static Builder builder(String id, String leaseToken, long fencingToken) {
         return new Builder(id, leaseToken, fencingToken);
     }
@@ -39,18 +43,59 @@ public record CompleteOptions(
             this.fencingToken = fencingToken;
         }
 
-        public Builder partitionKey(String value) { this.partitionKey = value; return this; }
-        public Builder result(Object value) { this.result = value; return this; }
-        public Builder payload(Object value) { this.payload = value; return this; }
-        public Builder ttlMs(long value) { this.ttlMs = value; return this; }
-        public Builder nowMs(long value) { this.nowMs = value; return this; }
-        public Builder value(String name, Object value) { this.values.put(name, value); return this; }
-        public Builder valueRef(String name, String ref) { this.valueRefs.put(name, ref); return this; }
-        public Builder returnRecord(boolean value) { this.returnRecord = value; return this; }
+        public Builder partitionKey(String value) {
+            this.partitionKey = value;
+            return this;
+        }
+
+        public Builder result(Object value) {
+            this.result = value;
+            return this;
+        }
+
+        public Builder payload(Object value) {
+            this.payload = value;
+            return this;
+        }
+
+        public Builder ttlMs(long value) {
+            this.ttlMs = value;
+            return this;
+        }
+
+        public Builder nowMs(long value) {
+            this.nowMs = value;
+            return this;
+        }
+
+        public Builder value(String name, Object value) {
+            this.values.put(name, value);
+            return this;
+        }
+
+        public Builder valueRef(String name, String ref) {
+            this.valueRefs.put(name, ref);
+            return this;
+        }
+
+        public Builder returnRecord(boolean value) {
+            this.returnRecord = value;
+            return this;
+        }
 
         public CompleteOptions build() {
-            return new CompleteOptions(id, leaseToken, fencingToken, partitionKey, result,
-                payload, ttlMs, nowMs, Map.copyOf(values), Map.copyOf(valueRefs), returnRecord);
+            return new CompleteOptions(
+                    id,
+                    leaseToken,
+                    fencingToken,
+                    partitionKey,
+                    result,
+                    payload,
+                    ttlMs,
+                    nowMs,
+                    Map.copyOf(values),
+                    Map.copyOf(valueRefs),
+                    returnRecord);
         }
     }
 }

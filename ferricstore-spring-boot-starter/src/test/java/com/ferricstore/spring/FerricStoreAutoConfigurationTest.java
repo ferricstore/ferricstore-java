@@ -9,7 +9,6 @@ import com.ferricstore.QueueClient;
 import com.ferricstore.RedisExecutor;
 import com.ferricstore.WorkflowClient;
 import com.ferricstore.spring.statemachine.FerricFlowStateMachine;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.FilteredClassLoader;
@@ -20,40 +19,50 @@ import org.springframework.statemachine.config.StateMachineBuilder;
 import org.springframework.statemachine.config.StateMachineFactory;
 
 final class FerricStoreAutoConfigurationTest {
-    private final ApplicationContextRunner runner = new ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(
-            FerricStoreAutoConfiguration.class,
-            FerricStoreStateMachineAutoConfiguration.class
-        ))
-        .withUserConfiguration(TestClientConfiguration.class);
+    private final ApplicationContextRunner runner =
+            new ApplicationContextRunner()
+                    .withConfiguration(
+                            AutoConfigurations.of(
+                                    FerricStoreAutoConfiguration.class,
+                                    FerricStoreStateMachineAutoConfiguration.class))
+                    .withUserConfiguration(TestClientConfiguration.class);
 
     @Test
     void createsQueueAndWorkflowClientsFromExistingFerricStoreClient() {
-        runner.run(context -> assertThat(context)
-            .hasSingleBean(FerricStoreClient.class)
-            .hasSingleBean(QueueClient.class)
-            .hasSingleBean(WorkflowClient.class)
-            .hasSingleBean(Codec.class));
+        runner.run(
+                context ->
+                        assertThat(context)
+                                .hasSingleBean(FerricStoreClient.class)
+                                .hasSingleBean(QueueClient.class)
+                                .hasSingleBean(WorkflowClient.class)
+                                .hasSingleBean(Codec.class));
     }
 
     @Test
     void supportsJsonCodecProperty() {
         runner.withPropertyValues("ferricstore.codec=json")
-            .run(context -> assertThat(context.getBean(Codec.class)).isInstanceOf(JsonCodec.class));
+                .run(
+                        context ->
+                                assertThat(context.getBean(Codec.class))
+                                        .isInstanceOf(JsonCodec.class));
     }
 
     @Test
     void createsFerricFlowStateMachineFromSingleSpringFactory() {
         runner.withUserConfiguration(TestStateMachineConfiguration.class)
-            .run(context -> assertThat(context).hasSingleBean(FerricFlowStateMachine.class));
+                .run(context -> assertThat(context).hasSingleBean(FerricFlowStateMachine.class));
     }
 
     @Test
     void loadsStarterWithoutOptionalStateMachineAdapter() {
-        runner.withClassLoader(new FilteredClassLoader(FerricFlowStateMachine.class, StateMachineFactory.class))
-            .run(context -> assertThat(context)
-                .hasSingleBean(FerricStoreClient.class)
-                .doesNotHaveBean(FerricFlowStateMachine.class));
+        runner.withClassLoader(
+                        new FilteredClassLoader(
+                                FerricFlowStateMachine.class, StateMachineFactory.class))
+                .run(
+                        context ->
+                                assertThat(context)
+                                        .hasSingleBean(FerricStoreClient.class)
+                                        .doesNotHaveBean(FerricFlowStateMachine.class));
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -71,12 +80,12 @@ final class FerricStoreAutoConfigurationTest {
         StateMachineFactory<String, String> orderMachine() throws Exception {
             StateMachineBuilder.Builder<String, String> builder = StateMachineBuilder.builder();
             builder.configureStates()
-                .withStates()
-                .initial("created")
-                .state("charged")
-                .end("completed");
+                    .withStates()
+                    .initial("created")
+                    .state("charged")
+                    .end("completed");
             builder.configureTransitions()
-                .withExternal()
+                    .withExternal()
                     .source("created")
                     .target("charged")
                     .event("CHARGE");

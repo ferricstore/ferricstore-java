@@ -11,6 +11,7 @@ Releases are published to Maven Central from GitHub Actions when a version tag i
   - `GPG_PASSPHRASE`
 - `pom.xml` versions and `CHANGELOG.md` are updated.
 - `mise exec -- mvn test` passes locally.
+- `mise exec -- mvn -P quality verify` passes locally.
 - `mise exec -- mvn -DskipTests package` passes locally.
 
 ## Release Steps
@@ -25,12 +26,13 @@ Releases are published to Maven Central from GitHub Actions when a version tag i
    git push origin main --tags
    ```
 
-5. GitHub Actions runs `mvn -P release deploy`.
+5. GitHub Actions runs the quality gates and `mvn -P release deploy`.
 6. GitHub Actions creates a GitHub release with generated release notes.
 
 ## Dry Run
 
 ```bash
 mise exec -- mvn test
+mise exec -- mvn -P quality verify
 mise exec -- mvn -DskipTests package
 ```

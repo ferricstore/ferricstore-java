@@ -6,6 +6,7 @@ import redis.clients.jedis.JedisPooled;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.commands.ProtocolCommand;
 
+@SuppressWarnings("deprecation")
 public final class JedisRedisExecutor implements RedisExecutor, AutoCloseable {
     private final UnifiedJedis jedis;
     private final boolean closeClient;
@@ -26,7 +27,8 @@ public final class JedisRedisExecutor implements RedisExecutor, AutoCloseable {
         }
         for (int i = 0; i < args.size(); i++) {
             if (args.get(i) == null) {
-                throw new IllegalArgumentException("Redis command argument cannot be null at index " + i);
+                throw new IllegalArgumentException(
+                        "Redis command argument cannot be null at index " + i);
             }
         }
         try {
@@ -57,9 +59,13 @@ public final class JedisRedisExecutor implements RedisExecutor, AutoCloseable {
     }
 
     private record RawCommand(byte[] raw) implements ProtocolCommand {
+        private RawCommand {
+            raw = raw.clone();
+        }
+
         @Override
         public byte[] getRaw() {
-            return raw;
+            return raw.clone();
         }
     }
 }

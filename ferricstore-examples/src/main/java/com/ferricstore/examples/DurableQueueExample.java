@@ -8,8 +8,9 @@ import com.ferricstore.QueueWorkerResult;
 import java.util.Map;
 
 public final class DurableQueueExample {
-    private DurableQueueExample() {
-    }
+    private static final System.Logger LOG = System.getLogger(DurableQueueExample.class.getName());
+
+    private DurableQueueExample() {}
 
     public static void main(String[] args) {
         String url = System.getenv().getOrDefault("FERRICSTORE_URL", "redis://127.0.0.1:6379/0");
@@ -19,11 +20,11 @@ public final class DurableQueueExample {
 
             queue.enqueue(id, Map.of("imageId", "img-1", "size", "small"));
 
-            QueueWorkerResult result = queue.worker("thumbnail-worker-1").runOnce(job ->
-                Map.of("generated", true, "jobId", job.id())
-            );
+            QueueWorkerResult result =
+                    queue.worker("thumbnail-worker-1")
+                            .runOnce(job -> Map.of("generated", true, "jobId", job.id()));
 
-            System.out.println(result);
+            LOG.log(System.Logger.Level.INFO, "{0}", result);
         }
     }
 }

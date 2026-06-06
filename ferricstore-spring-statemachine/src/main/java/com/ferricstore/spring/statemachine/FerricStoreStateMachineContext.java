@@ -6,15 +6,15 @@ import com.ferricstore.WorkflowContext;
 import org.springframework.statemachine.StateContext;
 
 public final class FerricStoreStateMachineContext {
-    private FerricStoreStateMachineContext() {
-    }
+    private FerricStoreStateMachineContext() {}
 
     public static FerricStoreClient client(StateContext<String, String> context) {
         return header(context, FerricStoreStateMachineHeaders.CLIENT, FerricStoreClient.class);
     }
 
     public static WorkflowContext workflowContext(StateContext<String, String> context) {
-        return header(context, FerricStoreStateMachineHeaders.WORKFLOW_CONTEXT, WorkflowContext.class);
+        return header(
+                context, FerricStoreStateMachineHeaders.WORKFLOW_CONTEXT, WorkflowContext.class);
     }
 
     public static FlowRecord flowRecord(StateContext<String, String> context) {

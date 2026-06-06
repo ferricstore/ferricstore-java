@@ -27,8 +27,8 @@ public final class SetStore {
 
     public List<Object> smembers(String key) {
         return Resp.list(client.command("SMEMBERS", key)).stream()
-            .map(item -> item instanceof byte[] bytes ? client.codec().decode(bytes) : item)
-            .toList();
+                .map(item -> item instanceof byte[] bytes ? client.codec().decode(bytes) : item)
+                .toList();
     }
 
     public boolean sismember(String key, Object member) {

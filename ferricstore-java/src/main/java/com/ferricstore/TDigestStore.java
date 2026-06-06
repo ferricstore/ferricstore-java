@@ -9,16 +9,27 @@ public final class TDigestStore {
         this.client = client;
     }
 
-    public boolean create(String key) { return CommandArgs.ok(client.command("TDIGEST.CREATE", key)); }
+    public boolean create(String key) {
+        return CommandArgs.ok(client.command("TDIGEST.CREATE", key));
+    }
+
     public boolean add(String key, double... values) {
         List<Object> args = CommandArgs.args("TDIGEST.ADD", key);
-        for (double value : values) args.add(value);
+        for (double value : values) {
+            args.add(value);
+        }
         return CommandArgs.ok(client.command(args));
     }
+
     public List<Object> quantile(String key, double... quantiles) {
         List<Object> args = CommandArgs.args("TDIGEST.QUANTILE", key);
-        for (double quantile : quantiles) args.add(quantile);
+        for (double quantile : quantiles) {
+            args.add(quantile);
+        }
         return Resp.list(client.command(args));
     }
-    public Object info(String key) { return client.command("TDIGEST.INFO", key); }
+
+    public Object info(String key) {
+        return client.command("TDIGEST.INFO", key);
+    }
 }

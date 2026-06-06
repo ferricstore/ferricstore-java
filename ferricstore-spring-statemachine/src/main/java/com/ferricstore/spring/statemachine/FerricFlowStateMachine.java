@@ -43,14 +43,21 @@ public final class FerricFlowStateMachine {
         StateMachine<String, String> machine = factory.getStateMachine(context.id());
         restore(machine, context.state());
 
-        Message<String> message = MessageBuilder.withPayload(event)
-            .setHeader(FerricStoreStateMachineHeaders.CLIENT, context.client())
-            .setHeader(FerricStoreStateMachineHeaders.WORKFLOW_CONTEXT, context)
-            .setHeader(FerricStoreStateMachineHeaders.FLOW_RECORD, context.job())
-            .build();
+        Message<String> message =
+                MessageBuilder.withPayload(event)
+                        .setHeader(FerricStoreStateMachineHeaders.CLIENT, context.client())
+                        .setHeader(FerricStoreStateMachineHeaders.WORKFLOW_CONTEXT, context)
+                        .setHeader(FerricStoreStateMachineHeaders.FLOW_RECORD, context.job())
+                        .build();
 
-        List<StateMachineEventResult<String, String>> results = machine.sendEventCollect(Mono.just(message)).block();
-        if (results == null || results.stream().noneMatch(result -> result.getResultType() == StateMachineEventResult.ResultType.ACCEPTED)) {
+        List<StateMachineEventResult<String, String>> results =
+                machine.sendEventCollect(Mono.just(message)).block();
+        if (results == null
+                || results.stream()
+                        .noneMatch(
+                                result ->
+                                        result.getResultType()
+                                                == StateMachineEventResult.ResultType.ACCEPTED)) {
             return denied(context, event);
         }
 
@@ -59,7 +66,8 @@ public final class FerricFlowStateMachine {
             return denied(context, event);
         }
         if (completeStates.contains(target)) {
-            return Outcomes.complete(terminalResult == null ? Map.of("state", target) : terminalResult);
+            return Outcomes.complete(
+                    terminalResult == null ? Map.of("state", target) : terminalResult);
         }
         if (failStates.contains(target)) {
             return Outcomes.fail(Map.of("state", target, "event", event));
@@ -72,22 +80,33 @@ public final class FerricFlowStateMachine {
 
     private void restore(StateMachine<String, String> machine, String state) {
         machine.stopReactively().block();
-        DefaultStateMachineContext<String, String> context = new DefaultStateMachineContext<>(state, null, Map.of(), null);
-        machine.getStateMachineAccessor().doWithAllRegions(access -> access.resetStateMachineReactively(context).block());
+        DefaultStateMachineContext<String, String> context =
+                new DefaultStateMachineContext<>(state, null, Map.of(), null);
+        machine.getStateMachineAccessor()
+                .doWithAllRegions(access -> access.resetStateMachineReactively(context).block());
         machine.startReactively().block();
     }
 
     private Outcome denied(WorkflowContext context, String event) {
-        Map<String, Object> error = Map.of(
-            "message", "Spring Statemachine denied transition",
-            "id", context.id(),
-            "state", context.state(),
-            "event", event
-        );
+        Map<String, Object> error =
+                Map.of(
+                        "message",
+                        "Spring Statemachine denied transition",
+                        "id",
+                        context.id(),
+                        "state",
+                        context.state(),
+                        "event",
+                        event);
         return switch (deniedPolicy) {
             case FAIL -> Outcomes.fail(error);
             case RETRY -> Outcomes.retry(error);
-            case THROW -> throw new FerricStoreException("Spring Statemachine denied transition " + context.state() + " --" + event);
+            case THROW ->
+                    throw new FerricStoreException(
+                            "Spring Statemachine denied transition "
+                                    + context.state()
+                                    + " --"
+                                    + event);
         };
     }
 

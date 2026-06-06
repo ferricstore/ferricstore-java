@@ -14,11 +14,17 @@ public final class Queue {
     }
 
     public Object enqueue(String id, Object payload) {
-        return client.create(CreateOptions.builder(id, type).state(state).payload(payload).idempotent(true).build());
+        return client.create(
+                CreateOptions.builder(id, type)
+                        .state(state)
+                        .payload(payload)
+                        .idempotent(true)
+                        .build());
     }
 
     public Object enqueueMany(List<CreateItem> items) {
-        return client.createMany(CreateManyOptions.builder(type, items).state(state).independent(true).build());
+        return client.createMany(
+                CreateManyOptions.builder(type, items).state(state).independent(true).build());
     }
 
     public QueueWorker worker(String worker) {

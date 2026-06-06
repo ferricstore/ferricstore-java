@@ -1,8 +1,7 @@
 package com.ferricstore;
 
 public final class Outcomes {
-    private Outcomes() {
-    }
+    private Outcomes() {}
 
     public static TransitionOutcome transition(String toState) {
         return new TransitionOutcome(toState, null, null, null);
