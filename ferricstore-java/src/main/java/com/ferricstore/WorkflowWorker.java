@@ -126,14 +126,15 @@ public final class WorkflowWorker {
             Outcome outcome = handler.handle(new WorkflowContext(client, job, state));
             if (outcome instanceof TransitionOutcome transition) {
                 client.transition(
-                        TransitionOptions.builder(
-                                        job.id(),
-                                        state,
-                                        transition.toState(),
-                                        job.leaseToken(),
-                                        job.fencingToken())
+                        applyTransitionOutcome(
+                                        TransitionOptions.builder(
+                                                job.id(),
+                                                job.state(),
+                                                transition.toState(),
+                                                job.leaseToken(),
+                                                job.fencingToken()),
+                                        transition)
                                 .partitionKey(job.partitionKey())
-                                .payload(transition.payload())
                                 .build());
             } else if (outcome instanceof CompleteOutcome complete) {
                 client.complete(
@@ -144,7 +145,10 @@ public final class WorkflowWorker {
                                 .build());
             } else if (outcome instanceof RetryOutcome retry) {
                 client.retry(
-                        RetryOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                        applyRetryOutcome(
+                                        RetryOptions.builder(
+                                                job.id(), job.leaseToken(), job.fencingToken()),
+                                        retry)
                                 .partitionKey(job.partitionKey())
                                 .error(retry.error())
                                 .payload(retry.payload())
@@ -164,8 +168,28 @@ public final class WorkflowWorker {
                             .partitionKey(job.partitionKey())
                             .error(errorPayload(e))
                             .build());
-            return null;
         }
+        return null;
+    }
+
+    private static TransitionOptions.Builder applyTransitionOutcome(
+            TransitionOptions.Builder builder, TransitionOutcome transition) {
+        builder.payload(transition.payload());
+        if (transition.runAtMs() != null) {
+            builder.runAtMs(transition.runAtMs());
+        }
+        if (transition.priority() != null) {
+            builder.priority(transition.priority());
+        }
+        return builder;
+    }
+
+    private static RetryOptions.Builder applyRetryOutcome(
+            RetryOptions.Builder builder, RetryOutcome retry) {
+        if (retry.runAtMs() != null) {
+            builder.runAtMs(retry.runAtMs());
+        }
+        return builder;
     }
 
     private static Map<String, String> errorPayload(Exception e) {
