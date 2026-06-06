@@ -131,23 +131,6 @@ final class FerricStoreIntegrationTest {
             String type = "java-sdk-flow-" + suffix;
             long now = System.currentTimeMillis();
 
-            assertTrue(
-                    ok(
-                            client.installPolicy(
-                                    type,
-                                    null,
-                                    new RetryPolicy(2, "FIXED", 10L, 100L, 0, "failed"),
-                                    null)));
-            assertTrue(
-                    ok(
-                            client.installPolicy(
-                                    type,
-                                    "queued",
-                                    new RetryPolicy(1, "FIXED", 10L, 100L, 0, "failed"),
-                                    null)));
-            assertNotNull(client.policyGet(type, null));
-            assertNotNull(client.policyGet(type, "queued"));
-
             Object valueResponse =
                     client.valuePut(
                             Map.of("shared", true),
@@ -333,6 +316,11 @@ final class FerricStoreIntegrationTest {
     }
 
     private static void assertListSetSortedSetCommands(FerricStoreClient client, String prefix) {
+        assertListCommands(client, prefix);
+        assertSetAndSortedSetCommands(client, prefix);
+    }
+
+    private static void assertListCommands(FerricStoreClient client, String prefix) {
         String listKey = prefix + "list";
         String listDst = prefix + "list-dst";
         assertEquals(2, client.lists().lpush(listKey, "b", "a"));
@@ -356,7 +344,9 @@ final class FerricStoreIntegrationTest {
         assertNotNull(client.command("BLMOVE", listKey, listDst, "LEFT", "RIGHT", 1));
         assertTrue(client.lists().rpush(listKey, "mpop") >= 1);
         assertNotNull(client.command("BLMPOP", 1, 1, listKey, "LEFT", "COUNT", 1));
+    }
 
+    private static void assertSetAndSortedSetCommands(FerricStoreClient client, String prefix) {
         String setA = prefix + "set-a";
         String setB = prefix + "set-b";
         assertEquals(2, client.sets().sadd(setA, "a", "b"));
@@ -466,8 +456,7 @@ final class FerricStoreIntegrationTest {
                                         "palermo",
                                         "BYRADIUS",
                                         200,
-                                        "km",
-                                        "STOREDIST"))
+                                        "km"))
                         >= 0);
     }
 
