@@ -77,8 +77,7 @@ final class FerricStoreIntegrationTest {
                 assertTrue(rate.remaining() >= 0);
                 assertFalse(client.keyInfo(key).isEmpty());
 
-                FetchOrComputeResult first =
-                        client.fetchOrCompute(cacheKey, 60_000, "integration");
+                FetchOrComputeResult first = client.fetchOrCompute(cacheKey, 60_000, "integration");
                 assertTrue(first.shouldCompute());
                 assertTrue(client.fetchOrComputeResult(cacheKey, Map.of("computed", true), 60_000));
                 FetchOrComputeResult cached = client.fetchOrCompute(cacheKey, 60_000, null);
@@ -132,12 +131,30 @@ final class FerricStoreIntegrationTest {
             String type = "java-sdk-flow-" + suffix;
             long now = System.currentTimeMillis();
 
-            assertTrue(ok(client.installPolicy(type, null, new RetryPolicy(2, "fixed", 10L, 100L, 0, "failed"), null)));
-            assertTrue(ok(client.installPolicy(type, "queued", new RetryPolicy(1, "fixed", 10L, 100L, 0, "failed"), null)));
+            assertTrue(
+                    ok(
+                            client.installPolicy(
+                                    type,
+                                    null,
+                                    new RetryPolicy(2, "FIXED", 10L, 100L, 0, "failed"),
+                                    null)));
+            assertTrue(
+                    ok(
+                            client.installPolicy(
+                                    type,
+                                    "queued",
+                                    new RetryPolicy(1, "FIXED", 10L, 100L, 0, "failed"),
+                                    null)));
             assertNotNull(client.policyGet(type, null));
             assertNotNull(client.policyGet(type, "queued"));
 
-            Object valueResponse = client.valuePut(Map.of("shared", true), null, null, "java-sdk:value:" + suffix, 60_000L);
+            Object valueResponse =
+                    client.valuePut(
+                            Map.of("shared", true),
+                            null,
+                            null,
+                            "java-sdk:value:" + suffix,
+                            60_000L);
             String valueRef = text(field(valueResponse, "ref"));
             assertEquals(List.of(Map.of("shared", true)), client.valueMGet(List.of(valueRef)));
 
@@ -150,7 +167,8 @@ final class FerricStoreIntegrationTest {
                             .payload(Map.of("step", "created"))
                             .idempotent(true)
                             .build());
-            assertNotNull(client.signal(signalId, "approve", "approved", signalPartition, Map.of()));
+            assertNotNull(
+                    client.signal(signalId, "approve", "approved", signalPartition, Map.of()));
             FlowRecord signaled = client.get(signalId, signalPartition);
             assertNotNull(signaled);
             assertEquals("approved", signaled.state());
@@ -225,7 +243,9 @@ final class FerricStoreIntegrationTest {
         assertEquals(5, client.kv().incrBy(prefix + "counter", 4));
         assertEquals(4, client.kv().decr(prefix + "counter"));
         assertEquals(2, client.kv().decrBy(prefix + "counter", 2));
-        assertTrue(Double.parseDouble(text(client.command("INCRBYFLOAT", prefix + "float", "1.5"))) >= 1.5);
+        assertTrue(
+                Double.parseDouble(text(client.command("INCRBYFLOAT", prefix + "float", "1.5")))
+                        >= 1.5);
         assertEquals(3, number(client.command("APPEND", prefix + "append", "abc")));
         assertEquals(3, number(client.command("STRLEN", prefix + "append")));
         assertEquals("abc", text(client.command("GETSET", prefix + "append", "xyz")));
@@ -237,8 +257,20 @@ final class FerricStoreIntegrationTest {
         assertEquals(1, number(client.command("PERSIST", prefix + "append")));
         assertTrue(client.kv().expire(prefix + "append", 60));
         assertEquals(1, number(client.command("PEXPIRE", prefix + "append", 60_000)));
-        assertEquals(1, number(client.command("EXPIREAT", prefix + "append", System.currentTimeMillis() / 1000 + 60)));
-        assertEquals(1, number(client.command("PEXPIREAT", prefix + "append", System.currentTimeMillis() + 60_000)));
+        assertEquals(
+                1,
+                number(
+                        client.command(
+                                "EXPIREAT",
+                                prefix + "append",
+                                System.currentTimeMillis() / 1000 + 60)));
+        assertEquals(
+                1,
+                number(
+                        client.command(
+                                "PEXPIREAT",
+                                prefix + "append",
+                                System.currentTimeMillis() + 60_000)));
         assertTrue(number(client.command("EXPIRETIME", prefix + "append")) >= 0);
         assertTrue(number(client.command("PEXPIRETIME", prefix + "append")) >= 0);
         assertEquals("string", client.kv().type(prefix + "append"));
@@ -247,7 +279,8 @@ final class FerricStoreIntegrationTest {
         assertTrue(ok(client.command("PSETEX", prefix + "psetex", 60_000, "1")));
         assertEquals(1, number(client.command("COPY", key, prefix + "copy", "REPLACE")));
         assertTrue(ok(client.command("RENAME", prefix + "copy", prefix + "renamed")));
-        assertEquals(1, number(client.command("RENAMENX", prefix + "renamed", prefix + "renamed-nx")));
+        assertEquals(
+                1, number(client.command("RENAMENX", prefix + "renamed", prefix + "renamed-nx")));
         assertNotNull(client.command("RANDOMKEY"));
         assertFalse(client.kv().keys(prefix + "*").isEmpty());
         assertNotNull(client.kv().scan("0", prefix + "*", 10L));
@@ -275,7 +308,9 @@ final class FerricStoreIntegrationTest {
         assertFalse(list(client.command("HVALS", key)).isEmpty());
         assertTrue(client.hash().hlen(key) >= 2);
         assertEquals(3, client.hash().hincrBy(key, "count", 2));
-        assertTrue(Double.parseDouble(text(client.command("HINCRBYFLOAT", key, "float", "1.25"))) >= 1.25);
+        assertTrue(
+                Double.parseDouble(text(client.command("HINCRBYFLOAT", key, "float", "1.25")))
+                        >= 1.25);
         assertEquals(1, number(client.command("HSETNX", key, "new", "item")));
         assertEquals(5, number(client.command("HSTRLEN", key, "field")));
         assertNotNull(client.command("HRANDFIELD", key, 1, "WITHVALUES"));
@@ -286,9 +321,14 @@ final class FerricStoreIntegrationTest {
         assertNotNull(client.command("HPEXPIRE", key, 60_000, "FIELDS", 1, "field"));
         assertNotNull(client.command("HPTTL", key, "FIELDS", 1, "field"));
         assertNotNull(client.command("HEXPIRETIME", key, "FIELDS", 1, "field"));
-        assertEquals("value", text(list(client.command("HGETEX", key, "PX", 60_000, "FIELDS", 1, "field")).getFirst()));
+        assertEquals(
+                "value",
+                text(
+                        list(client.command("HGETEX", key, "PX", 60_000, "FIELDS", 1, "field"))
+                                .getFirst()));
         assertTrue(number(client.command("HSETEX", key, 60, "temp", "1")) >= 0);
-        assertEquals("1", text(list(client.command("HGETDEL", key, "FIELDS", 1, "temp")).getFirst()));
+        assertEquals(
+                "1", text(list(client.command("HGETDEL", key, "FIELDS", 1, "temp")).getFirst()));
         assertEquals(1, client.hash().hdel(key, "new"));
     }
 
@@ -377,7 +417,17 @@ final class FerricStoreIntegrationTest {
         assertNotNull(client.command("XINFO", "STREAM", stream));
         String group = "group-" + suffix;
         assertTrue(ok(client.command("XGROUP", "CREATE", stream, group, "0")));
-        assertNotNull(client.command("XREADGROUP", "GROUP", group, "consumer", "COUNT", 1, "STREAMS", stream, ">"));
+        assertNotNull(
+                client.command(
+                        "XREADGROUP",
+                        "GROUP",
+                        group,
+                        "consumer",
+                        "COUNT",
+                        1,
+                        "STREAMS",
+                        stream,
+                        ">"));
         assertTrue(client.stream().xack(stream, group, streamId) >= 0);
         assertTrue(number(client.command("XTRIM", stream, "MAXLEN", "~", 10)) >= 0);
         assertTrue(number(client.command("XDEL", stream, streamId)) >= 0);
@@ -395,12 +445,17 @@ final class FerricStoreIntegrationTest {
         assertTrue(ok(client.command("PFMERGE", prefix + "hll-dst", hll)));
 
         String geo = prefix + "geo";
-        assertEquals(1, client.geo().geoadd(geo, List.of(new GeoMember(13.361389, 38.115556, "palermo"))));
-        assertEquals(1, client.geo().geoadd(geo, List.of(new GeoMember(15.087269, 37.502669, "catania"))));
+        assertEquals(
+                1,
+                client.geo().geoadd(geo, List.of(new GeoMember(13.361389, 38.115556, "palermo"))));
+        assertEquals(
+                1,
+                client.geo().geoadd(geo, List.of(new GeoMember(15.087269, 37.502669, "catania"))));
         assertNotNull(client.geo().geopos(geo, "palermo"));
         assertNotNull(client.command("GEODIST", geo, "palermo", "catania", "km"));
         assertNotNull(client.command("GEOHASH", geo, "palermo"));
-        assertNotNull(client.command("GEOSEARCH", geo, "FROMMEMBER", "palermo", "BYRADIUS", 200, "km"));
+        assertNotNull(
+                client.command("GEOSEARCH", geo, "FROMMEMBER", "palermo", "BYRADIUS", 200, "km"));
         assertTrue(
                 number(
                                 client.command(
@@ -473,7 +528,15 @@ final class FerricStoreIntegrationTest {
         assertNotNull(client.tdigest().info(tdigest));
         assertTrue(client.tdigest().create(tdigestSrc));
         assertTrue(client.tdigest().add(tdigestSrc, 5, 6));
-        assertTrue(ok(client.command("TDIGEST.MERGE", prefix + "tdigest-dst", 2, tdigest, tdigestSrc, "OVERRIDE")));
+        assertTrue(
+                ok(
+                        client.command(
+                                "TDIGEST.MERGE",
+                                prefix + "tdigest-dst",
+                                2,
+                                tdigest,
+                                tdigestSrc,
+                                "OVERRIDE")));
         assertTrue(ok(client.command("TDIGEST.RESET", tdigest)));
     }
 
@@ -484,8 +547,10 @@ final class FerricStoreIntegrationTest {
                 CreateManyOptions.builder(
                                 type,
                                 List.of(
-                                        new CreateItem("java-sdk:batch:" + suffix + ":a", Map.of("n", 1)),
-                                        new CreateItem("java-sdk:batch:" + suffix + ":b", Map.of("n", 2))))
+                                        new CreateItem(
+                                                "java-sdk:batch:" + suffix + ":a", Map.of("n", 1)),
+                                        new CreateItem(
+                                                "java-sdk:batch:" + suffix + ":b", Map.of("n", 2))))
                         .partitionKey(partition)
                         .state("batch")
                         .nowMs(now)
@@ -511,7 +576,8 @@ final class FerricStoreIntegrationTest {
 
     private static void assertSingleMutationCommands(
             FerricStoreClient client, String type, String suffix, long now) {
-        ClaimedFlow transition = createAndClaim(client, type, suffix, "transition", "queued", now, 30_000);
+        ClaimedFlow transition =
+                createAndClaim(client, type, suffix, "transition", "queued", now, 30_000);
         assertNotNull(
                 client.extendLease(
                         transition.job().id(),
@@ -530,10 +596,12 @@ final class FerricStoreIntegrationTest {
                                 .partitionKey(transition.partitionKey())
                                 .payload(Map.of("step", "ready"))
                                 .build()));
-        ClaimedItem ready = claimOne(client, type, "ready", transition.partitionKey(), "java-sdk-ready-worker");
+        ClaimedItem ready =
+                claimOne(client, type, "ready", transition.partitionKey(), "java-sdk-ready-worker");
         assertNotNull(
                 client.complete(
-                        CompleteOptions.builder(ready.id(), ready.leaseToken(), ready.fencingToken())
+                        CompleteOptions.builder(
+                                        ready.id(), ready.leaseToken(), ready.fencingToken())
                                 .partitionKey(ready.partitionKey())
                                 .result(Map.of("ok", true))
                                 .build()));
@@ -550,7 +618,8 @@ final class FerricStoreIntegrationTest {
                                 .runAtMs(now)
                                 .nowMs(now)
                                 .build()));
-        ClaimedItem retried = claimOne(client, type, "queued", retry.partitionKey(), "java-sdk-retry-worker");
+        ClaimedItem retried =
+                claimOne(client, type, "queued", retry.partitionKey(), "java-sdk-retry-worker");
         assertNotNull(
                 client.complete(
                         CompleteOptions.builder(
@@ -569,9 +638,12 @@ final class FerricStoreIntegrationTest {
                                 .error(Map.of("failed", true))
                                 .build()));
         assertEquals("failed", client.get(failed.id(), failed.partitionKey()).state());
-        assertTrue(client.failures(type, null, 20).stream().anyMatch(record -> record.id().equals(failed.id())));
+        assertTrue(
+                client.failures(type, null, 20).stream()
+                        .anyMatch(record -> record.id().equals(failed.id())));
 
-        ClaimedFlow cancelled = createAndClaim(client, type, suffix, "cancel", "queued", now, 30_000);
+        ClaimedFlow cancelled =
+                createAndClaim(client, type, suffix, "cancel", "queued", now, 30_000);
         assertNotNull(
                 client.cancel(
                         CancelOptions.builder(cancelled.id(), cancelled.job().fencingToken())
@@ -580,7 +652,9 @@ final class FerricStoreIntegrationTest {
                                 .reason(Map.of("cancelled", true))
                                 .build()));
         assertEquals("cancelled", client.get(cancelled.id(), cancelled.partitionKey()).state());
-        assertTrue(client.terminals(type, null, null, 50).stream().anyMatch(record -> record.id().equals(cancelled.id())));
+        assertTrue(
+                client.terminals(type, null, null, 50).stream()
+                        .anyMatch(record -> record.id().equals(cancelled.id())));
     }
 
     private static void assertManyMutationCommands(
@@ -590,24 +664,28 @@ final class FerricStoreIntegrationTest {
                 CreateManyOptions.builder(
                                 type,
                                 List.of(
-                                        new CreateItem("java-sdk:many:" + suffix + ":a"),
-                                        new CreateItem("java-sdk:many:" + suffix + ":b")))
+                                        new CreateItem("java-sdk:many:" + suffix + ":a", Map.of()),
+                                        new CreateItem("java-sdk:many:" + suffix + ":b", Map.of())))
                         .partitionKey(transitionPartition)
                         .state("many-transition")
                         .nowMs(now)
                         .runAtMs(now)
                         .build());
-        List<ClaimedItem> manyJobs = claimMany(client, type, "many-transition", transitionPartition, now, 2);
+        List<ClaimedItem> manyJobs =
+                claimMany(client, type, "many-transition", transitionPartition, now, 2);
         assertNotNull(
                 client.transitionMany(
                         TransitionManyOptions.builder(
                                         "many-transition",
                                         "many-complete",
-                                        manyJobs.stream().map(FerricStoreIntegrationTest::fenced).toList())
+                                        manyJobs.stream()
+                                                .map(FerricStoreIntegrationTest::fenced)
+                                                .toList())
                                 .partitionKey(transitionPartition)
                                 .nowMs(now)
                                 .build()));
-        List<ClaimedItem> completeJobs = claimMany(client, type, "many-complete", transitionPartition, now + 1, 2);
+        List<ClaimedItem> completeJobs =
+                claimMany(client, type, "many-complete", transitionPartition, now + 1, 2);
         assertNotNull(
                 client.completeMany(
                         CompleteManyOptions.builder(completeJobs)
@@ -626,7 +704,8 @@ final class FerricStoreIntegrationTest {
                                 .runAtMs(now)
                                 .nowMs(now)
                                 .build()));
-        List<ClaimedItem> retryAgain = claimMany(client, type, "retry-many", retryPartition, now + 1, 2);
+        List<ClaimedItem> retryAgain =
+                claimMany(client, type, "retry-many", retryPartition, now + 1, 2);
         assertNotNull(
                 client.failMany(
                         FailManyOptions.builder(retryAgain)
@@ -636,7 +715,8 @@ final class FerricStoreIntegrationTest {
 
         String cancelPartition = "java-sdk:cancel-many:" + suffix + ":partition";
         createManyState(client, type, cancelPartition, "cancel-many", suffix, "cancel-many", now);
-        List<ClaimedItem> cancelJobs = claimMany(client, type, "cancel-many", cancelPartition, now, 2);
+        List<ClaimedItem> cancelJobs =
+                claimMany(client, type, "cancel-many", cancelPartition, now, 2);
         assertNotNull(
                 client.cancelMany(
                         CancelManyOptions.builder(
@@ -659,7 +739,8 @@ final class FerricStoreIntegrationTest {
                         .nowMs(1_000)
                         .runAtMs(1_000)
                         .build());
-        claimOneAt(client, type, "reclaim", reclaimPartition, "java-sdk-reclaim-initial", 1_000, 10);
+        claimOneAt(
+                client, type, "reclaim", reclaimPartition, "java-sdk-reclaim-initial", 1_000, 10);
         List<ClaimedItem> reclaimed =
                 client.reclaimJobs(
                         ClaimDueOptions.builder(type, "java-sdk-reclaim-worker")
@@ -688,11 +769,22 @@ final class FerricStoreIntegrationTest {
                         .nowMs(1_000)
                         .runAtMs(1_000)
                         .build());
-        ClaimedItem stuck = claimOneAt(client, type, "stuck", stuckPartition, "java-sdk-stuck-worker", 1_000, 60_000);
-        assertTrue(client.stuck(type, stuckPartition, 10, 1L, 120_000L).stream().anyMatch(record -> record.id().equals(stuckId)));
+        ClaimedItem stuck =
+                claimOneAt(
+                        client,
+                        type,
+                        "stuck",
+                        stuckPartition,
+                        "java-sdk-stuck-worker",
+                        1_000,
+                        60_000);
+        assertTrue(
+                client.stuck(type, stuckPartition, 10, 1L, 120_000L).stream()
+                        .anyMatch(record -> record.id().equals(stuckId)));
         assertNotNull(
                 client.complete(
-                        CompleteOptions.builder(stuck.id(), stuck.leaseToken(), stuck.fencingToken())
+                        CompleteOptions.builder(
+                                        stuck.id(), stuck.leaseToken(), stuck.fencingToken())
                                 .partitionKey(stuck.partitionKey())
                                 .build()));
 
@@ -713,8 +805,14 @@ final class FerricStoreIntegrationTest {
                         SpawnChildrenOptions.builder(
                                         parentId,
                                         List.of(
-                                                new ChildSpec("java-sdk:child:" + suffix + ":a", type, Map.of("child", "a")),
-                                                new ChildSpec("java-sdk:child:" + suffix + ":b", type, Map.of("child", "b"))))
+                                                new ChildSpec(
+                                                        "java-sdk:child:" + suffix + ":a",
+                                                        type,
+                                                        Map.of("child", "a")),
+                                                new ChildSpec(
+                                                        "java-sdk:child:" + suffix + ":b",
+                                                        type,
+                                                        Map.of("child", "b"))))
                                 .partitionKey(parentPartition)
                                 .fencingToken(parent.fencingToken())
                                 .groupId("fanout")
@@ -724,12 +822,21 @@ final class FerricStoreIntegrationTest {
                                 .success("children_done")
                                 .failure("children_failed")
                                 .build()));
-        assertTrue(client.byParent(parentId, null, 20).stream().anyMatch(record -> record.id().startsWith("java-sdk:child:" + suffix + ":")));
-        assertTrue(client.byRoot("root:" + suffix, null, 20).stream().anyMatch(record -> record.id().equals(parentId)));
-        assertTrue(client.byCorrelation("corr:" + suffix, null, 20).stream().anyMatch(record -> record.id().equals(parentId)));
+        assertTrue(
+                client.byParent(parentId, null, 20).stream()
+                        .anyMatch(
+                                record ->
+                                        record.id().startsWith("java-sdk:child:" + suffix + ":")));
+        assertTrue(
+                client.byRoot("root:" + suffix, null, 20).stream()
+                        .anyMatch(record -> record.id().equals(parentId)));
+        assertTrue(
+                client.byCorrelation("corr:" + suffix, null, 20).stream()
+                        .anyMatch(record -> record.id().equals(parentId)));
 
         ClaimedFlow rewind = createAndClaim(client, type, suffix, "rewind", "queued", now, 30_000);
-        String createdEventId = eventId(client.history(rewind.id(), rewind.partitionKey(), 10).getFirst());
+        String createdEventId =
+                eventId(client.history(rewind.id(), rewind.partitionKey(), 10).getFirst());
         client.complete(
                 CompleteOptions.builder(
                                 rewind.job().id(),
@@ -763,8 +870,11 @@ final class FerricStoreIntegrationTest {
                 CreateManyOptions.builder(
                                 type,
                                 List.of(
-                                        new CreateItem("java-sdk:" + name + ":" + suffix + ":a"),
-                                        new CreateItem("java-sdk:" + name + ":" + suffix + ":b")))
+                                        new CreateItem(
+                                                "java-sdk:" + name + ":" + suffix + ":a", Map.of()),
+                                        new CreateItem(
+                                                "java-sdk:" + name + ":" + suffix + ":b",
+                                                Map.of())))
                         .partitionKey(partition)
                         .state(state)
                         .nowMs(now)
@@ -792,11 +902,25 @@ final class FerricStoreIntegrationTest {
                         .idempotent(true)
                         .build());
         return new ClaimedFlow(
-                id, partition, claimOneAt(client, type, state, partition, "java-sdk-" + name + "-worker", now, leaseMs));
+                id,
+                partition,
+                claimOneAt(
+                        client,
+                        type,
+                        state,
+                        partition,
+                        "java-sdk-" + name + "-worker",
+                        now,
+                        leaseMs));
     }
 
     private static List<ClaimedItem> claimMany(
-            FerricStoreClient client, String type, String state, String partition, long now, int limit) {
+            FerricStoreClient client,
+            String type,
+            String state,
+            String partition,
+            long now,
+            int limit) {
         List<ClaimedItem> jobs =
                 client.claimJobs(
                         ClaimDueOptions.builder(type, "java-sdk-many-worker")
