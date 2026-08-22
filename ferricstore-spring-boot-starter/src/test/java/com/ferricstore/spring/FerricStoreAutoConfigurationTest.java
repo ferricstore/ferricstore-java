@@ -3,10 +3,10 @@ package com.ferricstore.spring;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ferricstore.Codec;
+import com.ferricstore.CommandExecutor;
 import com.ferricstore.FerricStoreClient;
 import com.ferricstore.JsonCodec;
 import com.ferricstore.QueueClient;
-import com.ferricstore.RedisExecutor;
 import com.ferricstore.WorkflowClient;
 import com.ferricstore.spring.statemachine.FerricFlowStateMachine;
 import org.junit.jupiter.api.Test;
@@ -48,6 +48,29 @@ final class FerricStoreAutoConfigurationTest {
     }
 
     @Test
+    void defaultsToTheFerricStoreNativeEndpoint() {
+        assertThat(new FerricStoreProperties().getUrl()).isEqualTo("ferric://127.0.0.1:6388");
+    }
+
+    @Test
+    void bindsHttpAuthenticationWithoutMakingSpringRequiredByTheCore() {
+        runner.withPropertyValues(
+                        "ferricstore.url=https://gateway.example",
+                        "ferricstore.http.username=lambda",
+                        "ferricstore.http.password=secret",
+                        "ferricstore.http.max-concurrent-requests=32")
+                .run(
+                        context -> {
+                            FerricStoreProperties properties =
+                                    context.getBean(FerricStoreProperties.class);
+                            assertThat(properties.getHttp().getUsername()).isEqualTo("lambda");
+                            assertThat(properties.getHttp().getPassword()).isEqualTo("secret");
+                            assertThat(properties.getHttp().getMaxConcurrentRequests())
+                                    .isEqualTo(32);
+                        });
+    }
+
+    @Test
     void createsFerricFlowStateMachineFromSingleSpringFactory() {
         runner.withUserConfiguration(TestStateMachineConfiguration.class)
                 .run(context -> assertThat(context).hasSingleBean(FerricFlowStateMachine.class));
@@ -69,7 +92,7 @@ final class FerricStoreAutoConfigurationTest {
     static class TestClientConfiguration {
         @Bean
         FerricStoreClient ferricStoreClient(Codec codec) {
-            RedisExecutor executor = args -> "OK";
+            CommandExecutor executor = args -> "OK";
             return FerricStoreClient.fromExecutor(executor, codec);
         }
     }

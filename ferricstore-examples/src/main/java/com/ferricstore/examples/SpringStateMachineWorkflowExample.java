@@ -17,7 +17,7 @@ public final class SpringStateMachineWorkflowExample {
 
     public static void main(String[] args) throws Exception {
         try (FerricStoreClient client =
-                FerricStoreClient.connect("redis://127.0.0.1:6379/0", new JsonCodec())) {
+                FerricStoreClient.connect("ferric://127.0.0.1:6388", new JsonCodec())) {
             FerricFlowStateMachine graph = FerricFlowStateMachine.builder(orderMachine()).build();
             Workflow order =
                     new WorkflowClient(client)
@@ -29,10 +29,7 @@ public final class SpringStateMachineWorkflowExample {
                                             graph.apply(context, "COMPLETE", Map.of("ok", true)));
 
             order.start("order-1", Map.of("amount", 42, "userId", "user-1"));
-            order.worker("order-worker-1", List.of("created", "charged"))
-                    .concurrency(64)
-                    .virtualThreads()
-                    .runOnce();
+            order.worker("order-worker-1", List.of("created", "charged")).concurrency(64).runOnce();
         }
     }
 

@@ -15,11 +15,13 @@ public record TransitionManyOptions(
         Long priority,
         Boolean independent,
         Map<String, ?> values,
-        Map<String, String> valueRefs) {
+        Map<String, String> valueRefs,
+        FlowMutationFields mutationFields) {
     public TransitionManyOptions {
         items = ImmutableCopies.list(items);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
+        mutationFields = mutationFields == null ? FlowMutationFields.empty() : mutationFields;
     }
 
     public static Builder builder(String fromState, String toState, List<FencedItem> items) {
@@ -38,6 +40,7 @@ public record TransitionManyOptions(
         private Boolean independent;
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
+        private FlowMutationFields mutationFields = FlowMutationFields.empty();
 
         private Builder(String fromState, String toState, List<FencedItem> items) {
             this.fromState = fromState;
@@ -85,6 +88,11 @@ public record TransitionManyOptions(
             return this;
         }
 
+        public Builder mutationFields(FlowMutationFields value) {
+            mutationFields = value;
+            return this;
+        }
+
         public TransitionManyOptions build() {
             return new TransitionManyOptions(
                     partitionKey,
@@ -97,7 +105,8 @@ public record TransitionManyOptions(
                     priority,
                     independent,
                     Map.copyOf(values),
-                    Map.copyOf(valueRefs));
+                    Map.copyOf(valueRefs),
+                    mutationFields);
         }
     }
 }

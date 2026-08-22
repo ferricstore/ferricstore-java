@@ -4,11 +4,12 @@ Thanks for helping improve the FerricStore Java SDK.
 
 ## Development Setup
 
-Use Java 21 and Maven.
+Artifacts target Java 17. Local quality tooling uses Java 21 because current Checkstyle and Error Prone releases require it; CI executes the SDK on Java 17, 21, and 25.
 
 ```bash
 mise install
-mise exec -- mvn test
+mise run test
+mise run test:java17
 ```
 
 The Maven reactor builds:
@@ -31,7 +32,10 @@ docker compose down -v
 
 ## Design Rules
 
-- Keep the SDK thin over FerricStore RESP commands.
+- Keep the command API independent from the native TCP/TLS and HTTP/HTTPS transport layers.
+- Keep the core SDK framework-neutral; Spring modules are optional adapters.
+- Keep worker polling application-controlled. Reusable sessions may own execution resources but must not create hidden global schedulers.
+- Never close an application-supplied executor, and keep Java 21 features behind Java 17-safe adapters.
 - Prefer explicit FerricFlow outcomes over replay, proxies, or hidden instrumentation.
 - Preserve the escape hatch: anything missing from typed helpers must still work through `client.command(...)`.
 - Add tests for command shape when adding a typed wrapper.
@@ -42,7 +46,7 @@ docker compose down -v
 Run the strict local gate before opening a release PR:
 
 ```bash
-mise exec -- mvn -P quality verify
+mise run quality
 ```
 
 The `quality` profile fails on:
@@ -59,6 +63,7 @@ The `quality` profile fails on:
 
 - Add or update tests.
 - Update README/docs when changing public API.
-- Run `mise exec -- mvn test`.
-- Run `mise exec -- mvn -P quality verify`.
+- Run `mise run test:java17`.
+- Run `mise run test`.
+- Run `mise run quality`.
 - Run `mise exec -- mvn -DskipTests package` for packaging changes.

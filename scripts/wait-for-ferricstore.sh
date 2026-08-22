@@ -2,7 +2,7 @@
 set -euo pipefail
 
 host="${FERRICSTORE_HOST:-127.0.0.1}"
-port="${FERRICSTORE_PORT:-6379}"
+port="${FERRICSTORE_PORT:-6388}"
 deadline=$((SECONDS + ${FERRICSTORE_WAIT_SECONDS:-30}))
 
 while (( SECONDS < deadline )); do

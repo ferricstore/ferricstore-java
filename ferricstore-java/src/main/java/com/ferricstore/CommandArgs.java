@@ -60,6 +60,36 @@ final class CommandArgs {
         }
     }
 
+    static void appendMutationFields(List<Object> args, FlowMutationFields fields) {
+        FlowMutationFields effective = fields == null ? FlowMutationFields.empty() : fields;
+        appendEntries(args, "ATTRIBUTE_MERGE", effective.attributesMerge());
+        appendNames(args, "ATTRIBUTE_DELETE", effective.attributesDelete());
+        appendEntries(args, "STATE_META", effective.stateMeta());
+        appendNames(args, "DROP_VALUE", effective.dropValues());
+        appendNames(args, "OVERRIDE_VALUE", effective.overrideValues());
+    }
+
+    static void appendEntries(List<Object> args, String option, Map<String, ?> entries) {
+        if (entries != null) {
+            entries.forEach(
+                    (name, value) -> {
+                        args.add(option);
+                        args.add(name);
+                        args.add(value);
+                    });
+        }
+    }
+
+    static void appendNames(List<Object> args, String option, List<String> names) {
+        if (names != null) {
+            names.forEach(
+                    name -> {
+                        args.add(option);
+                        args.add(name);
+                    });
+        }
+    }
+
     static void appendPayloadRead(List<Object> args, Boolean payload, Long maxBytes) {
         if (Boolean.FALSE.equals(payload)) {
             args.add("NOPAYLOAD");

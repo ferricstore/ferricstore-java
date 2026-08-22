@@ -15,10 +15,15 @@ public record CreateManyOptions(
         Boolean idempotent,
         Boolean independent,
         Long retentionTtlMs,
+        MaxActiveMs maxActiveMs,
+        Map<String, ?> attributes,
+        Map<String, ?> stateMeta,
         Map<String, ?> values,
         Map<String, String> valueRefs) {
     public CreateManyOptions {
         items = ImmutableCopies.list(items);
+        attributes = ImmutableCopies.map(attributes);
+        stateMeta = ImmutableCopies.map(stateMeta);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
     }
@@ -38,6 +43,9 @@ public record CreateManyOptions(
         private Boolean idempotent;
         private Boolean independent;
         private Long retentionTtlMs;
+        private MaxActiveMs maxActiveMs;
+        private final Map<String, Object> attributes = new LinkedHashMap<>();
+        private final Map<String, Object> stateMeta = new LinkedHashMap<>();
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
 
@@ -56,6 +64,7 @@ public record CreateManyOptions(
             return this;
         }
 
+        // CPD-OFF -- The fluent single-create and bulk-create APIs intentionally stay symmetric.
         public Builder runAtMs(long value) {
             this.runAtMs = value;
             return this;
@@ -86,6 +95,36 @@ public record CreateManyOptions(
             return this;
         }
 
+        public Builder maxActiveMs(long value) {
+            this.maxActiveMs = MaxActiveMs.of(value);
+            return this;
+        }
+
+        public Builder maxActiveMs(MaxActiveMs value) {
+            this.maxActiveMs = value;
+            return this;
+        }
+
+        public Builder attribute(String name, Object value) {
+            this.attributes.put(name, value);
+            return this;
+        }
+
+        public Builder attributes(Map<String, ?> values) {
+            this.attributes.putAll(values);
+            return this;
+        }
+
+        public Builder stateMeta(String state, Object value) {
+            this.stateMeta.put(state, value);
+            return this;
+        }
+
+        public Builder stateMeta(Map<String, ?> values) {
+            this.stateMeta.putAll(values);
+            return this;
+        }
+
         public Builder value(String name, Object value) {
             this.values.put(name, value);
             return this;
@@ -106,6 +145,8 @@ public record CreateManyOptions(
             return this;
         }
 
+        // CPD-ON
+
         public CreateManyOptions build() {
             return new CreateManyOptions(
                     partitionKey,
@@ -118,6 +159,9 @@ public record CreateManyOptions(
                     idempotent,
                     independent,
                     retentionTtlMs,
+                    maxActiveMs,
+                    Map.copyOf(attributes),
+                    Map.copyOf(stateMeta),
                     Map.copyOf(values),
                     Map.copyOf(valueRefs));
         }

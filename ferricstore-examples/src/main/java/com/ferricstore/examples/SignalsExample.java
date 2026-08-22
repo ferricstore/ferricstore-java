@@ -15,7 +15,7 @@ public final class SignalsExample {
     private SignalsExample() {}
 
     public static void main(String[] args) {
-        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "redis://127.0.0.1:6379/0");
+        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
         try (FerricStoreClient client = FerricStoreClient.connect(url, new JsonCodec())) {
             Workflow review =
                     new WorkflowClient(client).workflow("document_review", "pending_review");

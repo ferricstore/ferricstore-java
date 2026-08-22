@@ -4,9 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.ferricstore.CommandExecutor;
 import com.ferricstore.FerricStoreClient;
 import com.ferricstore.JsonCodec;
-import com.ferricstore.RedisExecutor;
 import com.ferricstore.Workflow;
 import com.ferricstore.WorkflowClient;
 import java.util.ArrayList;
@@ -263,7 +263,7 @@ final class FerricFlowStateMachineTest {
                 1L);
     }
 
-    private static final class CapturingExecutor implements RedisExecutor {
+    private static final class CapturingExecutor implements CommandExecutor {
         private final Object claimResponse;
         private final List<List<Object>> calls = Collections.synchronizedList(new ArrayList<>());
 
@@ -274,7 +274,7 @@ final class FerricFlowStateMachineTest {
         @Override
         public Object execute(List<Object> args) {
             calls.add(List.copyOf(args));
-            if ("FLOW.CLAIM_DUE".equals(args.getFirst())) {
+            if ("FLOW.CLAIM_DUE".equals(args.get(0))) {
                 return claimResponse;
             }
             return "OK";
@@ -282,14 +282,14 @@ final class FerricFlowStateMachineTest {
 
         private int count(String command) {
             synchronized (calls) {
-                return (int) calls.stream().filter(call -> command.equals(call.getFirst())).count();
+                return (int) calls.stream().filter(call -> command.equals(call.get(0))).count();
             }
         }
 
         private List<Object> first(String command) {
             synchronized (calls) {
                 return calls.stream()
-                        .filter(call -> command.equals(call.getFirst()))
+                        .filter(call -> command.equals(call.get(0)))
                         .findFirst()
                         .orElseThrow();
             }

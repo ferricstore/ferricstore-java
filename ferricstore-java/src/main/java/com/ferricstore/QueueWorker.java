@@ -2,6 +2,7 @@ package com.ferricstore;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 
 public final class QueueWorker {
@@ -62,6 +63,21 @@ public final class QueueWorker {
     }
 
     public QueueWorkerResult runOnce(QueueHandler handler) {
+        try (QueueWorkerSession session = openSession(handler)) {
+            return session.runOnce();
+        }
+    }
+
+    public QueueWorkerSession openSession(QueueHandler handler) {
+        return new QueueWorkerSession(
+                this, Objects.requireNonNull(handler, "handler cannot be null"));
+    }
+
+    WorkerExecutorLease openExecutorLease() {
+        return WorkerExecutorLease.create(concurrency, virtualThreads, executor);
+    }
+
+    QueueWorkerResult runOnce(QueueHandler handler, WorkerExecutorLease executorLease) {
         List<FlowRecord> jobs =
                 client.claimDue(
                         ClaimDueOptions.builder(type, worker)
@@ -70,8 +86,7 @@ public final class QueueWorker {
                                 .limit(batchSize)
                                 .build());
         List<JobResult> results =
-                WorkerExecutors.run(
-                        jobs, concurrency, virtualThreads, executor, job -> apply(job, handler));
+                WorkerExecutors.run(jobs, concurrency, executorLease, job -> apply(job, handler));
         return new QueueWorkerResult(
                 jobs.size(),
                 count(results, JobResult.COMPLETED),

@@ -22,7 +22,8 @@ public record ClaimDueOptions(
         List<String> values,
         Long valueMaxBytes,
         boolean jobOnly,
-        boolean includeState) {
+        boolean includeState,
+        boolean includeAttributes) {
     public ClaimDueOptions {
         states = ImmutableCopies.list(states);
         partitionKeys = ImmutableCopies.list(partitionKeys);
@@ -53,6 +54,7 @@ public record ClaimDueOptions(
         private Long valueMaxBytes;
         private boolean jobOnly;
         private boolean includeState;
+        private boolean includeAttributes;
 
         private Builder(String type, String worker) {
             this.type = type;
@@ -156,6 +158,11 @@ public record ClaimDueOptions(
             return this;
         }
 
+        public Builder includeAttributes(boolean value) {
+            this.includeAttributes = value;
+            return this;
+        }
+
         public ClaimDueOptions build() {
             return new ClaimDueOptions(
                     type,
@@ -176,7 +183,8 @@ public record ClaimDueOptions(
                     List.copyOf(values),
                     valueMaxBytes,
                     jobOnly,
-                    includeState);
+                    includeState,
+                    includeAttributes);
         }
     }
 }

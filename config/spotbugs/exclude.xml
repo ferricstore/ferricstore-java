@@ -8,6 +8,9 @@
       <Class name="com.ferricstore.ChildSpec" />
       <Class name="com.ferricstore.CreateItem" />
       <Class name="com.ferricstore.FlowRecord" />
+      <Class name="com.ferricstore.ClaimedItem" />
+      <Class name="com.ferricstore.FlowMutationFields" />
+      <Class name="com.ferricstore.PubSubMessage" />
       <Class name="com.ferricstore.RateLimitResult" />
     </Or>
   </Match>
@@ -17,12 +20,42 @@
     <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2" />
     <Or>
       <Class name="com.ferricstore.FerricStoreClient" />
-      <Class name="com.ferricstore.JedisRedisExecutor" />
+      <Class name="com.ferricstore.FerricStoreTransaction" />
       <Class name="com.ferricstore.JsonCodec" />
       <Class name="com.ferricstore.QueueClient" />
       <Class name="com.ferricstore.WorkflowClient" />
       <Class name="com.ferricstore.WorkflowContext" />
     </Or>
+  </Match>
+
+  <!-- AutoCloseable cleanup aggregates failures and intentionally rethrows unchecked errors. -->
+  <Match>
+    <Bug pattern="THROWS_METHOD_THROWS_RUNTIMEEXCEPTION" />
+    <Or>
+      <Class name="com.ferricstore.FerricStorePubSub" />
+      <Class name="com.ferricstore.FerricStoreTransaction" />
+    </Or>
+  </Match>
+
+  <!-- Raw HTTP details may contain non-serializable server values and are intentionally transient. -->
+  <Match>
+    <Bug pattern="SE_TRANSIENT_FIELD_NOT_RESTORED" />
+    <Or>
+      <Class name="com.ferricstore.HttpCommandException" />
+      <Class name="com.ferricstore.HttpTransportException" />
+    </Or>
+  </Match>
+
+  <!-- Negative contract tests intentionally pass null to verify public argument validation. -->
+  <Match>
+    <Bug pattern="NP_NULL_PARAM_DEREF_ALL_TARGETS_DANGEROUS" />
+    <Class name="~com\.ferricstore\..*Test" />
+  </Match>
+
+  <!-- Spring Boot's JavaBean configuration binder requires mutable nested property handles. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2" />
+    <Class name="~com\.ferricstore\.spring\.FerricStoreProperties.*" />
   </Match>
 
   <!-- Null payloads are encoded as absent FerricStore values, not empty byte arrays. -->
@@ -44,9 +77,36 @@
     </Or>
   </Match>
 
-  <!-- The raw executor maps Jedis runtime failures into FerricStore exceptions. -->
+  <!-- Test methods intentionally share JUnit's broad checked-exception boundary. -->
+  <Match>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION" />
+    <Class name="~com\.ferricstore\..*Test" />
+  </Match>
+
+  <!-- The assembler synchronizes on its private pending map; pending requests use CHM. -->
+  <Match>
+    <Bug pattern="AT_UNSAFE_RESOURCE_ACCESS_IN_THREAD" />
+    <Class name="com.ferricstore.NativeExecutor" />
+  </Match>
+
+  <!-- Protocol failures deliberately cross private runtime-only boundaries. -->
   <Match>
     <Bug pattern="THROWS_METHOD_THROWS_RUNTIMEEXCEPTION" />
-    <Class name="com.ferricstore.JedisRedisExecutor" />
+    <Or>
+      <Class name="com.ferricstore.NativeExecutor" />
+      <Class name="com.ferricstore.NativeResponseAssembler" />
+    </Or>
+  </Match>
+
+  <!-- Nullable metadata mirrors optional server fields; raw wire detail is transient by design. -->
+  <Match>
+    <Bug pattern="NP_BOOLEAN_RETURN_NULL,SE_TRANSIENT_FIELD_NOT_RESTORED" />
+    <Class name="com.ferricstore.NativeServerException" />
+  </Match>
+
+  <!-- ReentrantLock is acquired immediately before the try/finally; the detector misses lock(). -->
+  <Match>
+    <Bug pattern="CWO_CLOSED_WITHOUT_OPENED" />
+    <Class name="com.ferricstore.WorkerSessionRuntime" />
   </Match>
 </FindBugsFilter>
