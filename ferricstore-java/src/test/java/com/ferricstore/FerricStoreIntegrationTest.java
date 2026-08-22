@@ -78,11 +78,15 @@ final class FerricStoreIntegrationTest {
                 assertTrue(client.cas(key, "old", "new", null));
                 assertEquals("new", client.codec().decode((byte[]) client.command("GET", key)));
 
-                assertTrue(client.lock(lockKey, "owner-a", 30_000));
+                boolean lockAcquired = client.lock(lockKey, "owner-a", 30_000);
+                if (!lockAcquired) {
+                    throw new AssertionError("expected integration lock acquisition to succeed");
+                }
                 try {
                     assertEquals(1, client.extendLock(lockKey, "owner-a", 30_000));
                 } finally {
-                    assertEquals(1, client.unlock(lockKey, "owner-a"));
+                    long unlockResult = client.unlock(lockKey, "owner-a");
+                    assertEquals(1, unlockResult);
                 }
 
                 RateLimitResult rate = client.ratelimitAdd(rateKey, 60_000, 5, 2);
