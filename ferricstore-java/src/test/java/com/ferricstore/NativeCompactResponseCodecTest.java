@@ -50,6 +50,21 @@ final class NativeCompactResponseCodecTest {
                 () -> NativeCompactResponseCodec.decode("kv_mget_v1", body));
     }
 
+    @Test
+    void rejectsFixedWidthResponsesWithAnUntrustedZeroWidthCount() throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream output = new DataOutputStream(bytes)) {
+            output.writeShort(NativeProtocol.STATUS_OK);
+            output.writeByte(0x89);
+            output.writeInt(Integer.MAX_VALUE);
+            output.writeInt(0);
+        }
+
+        assertThrows(
+                NativeProtocolException.class,
+                () -> NativeCompactResponseCodec.decode("kv_mget_v1", bytes.toByteArray()));
+    }
+
     private static byte[] compactMgetBody(List<?> values) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream output = new DataOutputStream(bytes)) {

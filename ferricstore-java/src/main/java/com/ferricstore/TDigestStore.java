@@ -56,16 +56,15 @@ public final class TDigestStore {
     }
 
     public double trimmedMean(String key, double low, double high) {
-        return Double.parseDouble(
-                Resp.string(client.command("TDIGEST.TRIMMED_MEAN", key, low, high)));
+        return Resp.decimal(client.command("TDIGEST.TRIMMED_MEAN", key, low, high));
     }
 
     public double min(String key) {
-        return Double.parseDouble(Resp.string(client.command("TDIGEST.MIN", key)));
+        return Resp.decimal(client.command("TDIGEST.MIN", key));
     }
 
     public double max(String key) {
-        return Double.parseDouble(Resp.string(client.command("TDIGEST.MAX", key)));
+        return Resp.decimal(client.command("TDIGEST.MAX", key));
     }
 
     public boolean merge(String destination, int numKeys, Object... sourceAndOptions) {

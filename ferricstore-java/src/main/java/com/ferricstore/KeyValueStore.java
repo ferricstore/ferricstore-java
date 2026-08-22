@@ -111,7 +111,7 @@ public final class KeyValueStore {
     }
 
     public double incrByFloat(String key, double by) {
-        return Double.parseDouble(Resp.string(client.command("INCRBYFLOAT", key, by)));
+        return Resp.decimal(client.command("INCRBYFLOAT", key, by));
     }
 
     public long append(String key, Object value) {

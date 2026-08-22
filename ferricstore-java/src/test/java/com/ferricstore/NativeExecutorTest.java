@@ -7,12 +7,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URLEncoder;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -438,17 +439,20 @@ final class NativeExecutorTest {
     }
 
     private static NativeFrame readRequest(Socket socket) throws IOException {
-        DataInputStream input = new DataInputStream(socket.getInputStream());
-        byte[] magic = input.readNBytes(4);
+        byte[] header = socket.getInputStream().readNBytes(NativeProtocol.HEADER_BYTES);
+        assertEquals(NativeProtocol.HEADER_BYTES, header.length);
+        ByteBuffer input = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN);
+        byte[] magic = new byte[NativeProtocol.MAGIC.length];
+        input.get(magic);
         assertArrayEquals(NativeProtocol.MAGIC, magic);
-        assertEquals(NativeProtocol.REQUEST_VERSION, input.readUnsignedByte());
-        int flags = input.readUnsignedByte();
-        long laneId = Integer.toUnsignedLong(input.readInt());
-        int opcode = input.readUnsignedShort();
-        long requestId = input.readLong();
-        int length = input.readInt();
+        assertEquals(NativeProtocol.REQUEST_VERSION, Byte.toUnsignedInt(input.get()));
+        int flags = Byte.toUnsignedInt(input.get());
+        long laneId = Integer.toUnsignedLong(input.getInt());
+        int opcode = Short.toUnsignedInt(input.getShort());
+        long requestId = input.getLong();
+        int length = input.getInt();
         assertTrue(length >= 0);
-        byte[] body = input.readNBytes(length);
+        byte[] body = socket.getInputStream().readNBytes(length);
         assertEquals(length, body.length);
         return new NativeFrame(new NativeFrame.Identity(laneId, opcode, requestId), flags, body);
     }
@@ -470,39 +474,43 @@ final class NativeExecutorTest {
     private static void writeResponseHeader(
             Socket socket, NativeFrame.Identity identity, int flags, int bodyLength)
             throws IOException {
-        DataOutputStream output = new DataOutputStream(socket.getOutputStream());
-        output.write(NativeProtocol.MAGIC);
-        output.writeByte(NativeProtocol.RESPONSE_VERSION);
-        output.writeByte(flags);
-        output.writeInt((int) identity.laneId());
-        output.writeShort(identity.opcode());
-        output.writeLong(identity.requestId());
-        output.writeInt(bodyLength);
-        output.flush();
+        ByteBuffer header =
+                ByteBuffer.allocate(NativeProtocol.HEADER_BYTES).order(ByteOrder.BIG_ENDIAN);
+        header.put(NativeProtocol.MAGIC);
+        header.put((byte) NativeProtocol.RESPONSE_VERSION);
+        header.put((byte) flags);
+        header.putInt((int) identity.laneId());
+        header.putShort((short) identity.opcode());
+        header.putLong(identity.requestId());
+        header.putInt(bodyLength);
+        socket.getOutputStream().write(header.array());
+        socket.getOutputStream().flush();
     }
 
     private static byte[] responseBody(int status, Object value) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        DataOutputStream output = new DataOutputStream(bytes);
-        output.writeShort(status);
-        output.write(NativeValueCodec.encode(value, 64 * 1024));
+        try (DataOutputStream output = new DataOutputStream(bytes)) {
+            output.writeShort(status);
+            output.write(NativeValueCodec.encode(value, 64 * 1024));
+        }
         return bytes.toByteArray();
     }
 
     private static byte[] compactMgetBody(String... values) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        DataOutputStream output = new DataOutputStream(bytes);
-        output.writeShort(NativeProtocol.STATUS_OK);
-        output.writeByte(0x83);
-        output.writeInt(values.length);
-        for (String value : values) {
-            if (value == null) {
-                output.writeByte(0);
-            } else {
-                byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
-                output.writeByte(1);
-                output.writeInt(encoded.length);
-                output.write(encoded);
+        try (DataOutputStream output = new DataOutputStream(bytes)) {
+            output.writeShort(NativeProtocol.STATUS_OK);
+            output.writeByte(0x83);
+            output.writeInt(values.length);
+            for (String value : values) {
+                if (value == null) {
+                    output.writeByte(0);
+                } else {
+                    byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+                    output.writeByte(1);
+                    output.writeInt(encoded.length);
+                    output.write(encoded);
+                }
             }
         }
         return bytes.toByteArray();

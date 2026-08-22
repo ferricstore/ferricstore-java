@@ -163,6 +163,29 @@ final class HttpExecutorTest {
     }
 
     @Test
+    void failsAfterTenFollowedRedirects() throws IOException {
+        AtomicInteger requests = new AtomicInteger();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    requests.incrementAndGet();
+                                    exchange.getResponseHeaders().set("Location", "/v1/commands");
+                                    exchange.sendResponseHeaders(307, -1);
+                                    exchange.close();
+                                });
+                HttpExecutor executor =
+                        HttpExecutor.connect(server.url(), HttpTransportOptions.defaults())) {
+            HttpTransportException error =
+                    assertThrows(
+                            HttpTransportException.class, () -> executor.execute(List.of("PING")));
+
+            assertEquals("transport_error", error.errorCode());
+            assertTrue(error.getCause().getMessage().contains("too many HTTP redirects"));
+            assertEquals(11, requests.get());
+        }
+    }
+
+    @Test
     void rejectsConnectionAffineCommandsBeforeSendingARequest() throws IOException {
         AtomicInteger requests = new AtomicInteger();
         try (TestServer server =

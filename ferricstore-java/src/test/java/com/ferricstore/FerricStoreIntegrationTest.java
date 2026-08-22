@@ -78,9 +78,17 @@ final class FerricStoreIntegrationTest {
                 assertTrue(client.cas(key, "old", "new", null));
                 assertEquals("new", client.codec().decode((byte[]) client.command("GET", key)));
 
-                assertTrue(client.lock(lockKey, "owner-a", 30_000));
-                assertEquals(1, client.extendLock(lockKey, "owner-a", 30_000));
-                assertEquals(1, client.unlock(lockKey, "owner-a"));
+                boolean lockHeld = client.lock(lockKey, "owner-a", 30_000);
+                assertTrue(lockHeld);
+                try {
+                    assertEquals(1, client.extendLock(lockKey, "owner-a", 30_000));
+                    assertEquals(1, client.unlock(lockKey, "owner-a"));
+                    lockHeld = false;
+                } finally {
+                    if (lockHeld) {
+                        client.unlock(lockKey, "owner-a");
+                    }
+                }
 
                 RateLimitResult rate = client.ratelimitAdd(rateKey, 60_000, 5, 2);
                 assertTrue(rate.count() >= 1);
@@ -344,9 +352,7 @@ final class FerricStoreIntegrationTest {
         assertEquals(5, client.kv().incrBy(prefix + "counter", 4));
         assertEquals(4, client.kv().decr(prefix + "counter"));
         assertEquals(2, client.kv().decrBy(prefix + "counter", 2));
-        assertTrue(
-                Double.parseDouble(text(client.command("INCRBYFLOAT", prefix + "float", "1.5")))
-                        >= 1.5);
+        assertTrue(Resp.decimal(client.command("INCRBYFLOAT", prefix + "float", "1.5")) >= 1.5);
         assertEquals(3, number(client.command("APPEND", prefix + "append", "abc")));
         assertEquals(3, number(client.command("STRLEN", prefix + "append")));
         assertEquals("abc", text(client.command("GETSET", prefix + "append", "xyz")));
@@ -409,9 +415,7 @@ final class FerricStoreIntegrationTest {
         assertFalse(list(client.command("HVALS", key)).isEmpty());
         assertTrue(client.hash().hlen(key) >= 2);
         assertEquals(3, client.hash().hincrBy(key, "count", 2));
-        assertTrue(
-                Double.parseDouble(text(client.command("HINCRBYFLOAT", key, "float", "1.25")))
-                        >= 1.25);
+        assertTrue(Resp.decimal(client.command("HINCRBYFLOAT", key, "float", "1.25")) >= 1.25);
         assertEquals(1, number(client.command("HSETNX", key, "new", "item")));
         assertEquals(5, number(client.command("HSTRLEN", key, "field")));
         assertNotNull(client.command("HRANDFIELD", key, 1, "WITHVALUES"));

@@ -293,13 +293,15 @@ final class NativeValueCodec {
         }
 
         @Override
-        public void write(int value) {
+        @SuppressWarnings("PMD.AvoidSynchronizedAtMethodLevel") // Matches ByteArrayOutputStream.
+        public synchronized void write(int value) {
             ensure(1);
             super.write(value);
         }
 
         @Override
-        public void write(byte[] bytes, int offset, int length) {
+        @SuppressWarnings("PMD.AvoidSynchronizedAtMethodLevel") // Matches ByteArrayOutputStream.
+        public synchronized void write(byte[] bytes, int offset, int length) {
             ensure(length);
             super.write(bytes, offset, length);
         }

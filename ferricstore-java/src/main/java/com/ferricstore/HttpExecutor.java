@@ -211,7 +211,8 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         String method = "POST";
         byte[] body = initialBody;
         long remaining = initialRemaining;
-        for (int redirectCount = 0; redirectCount <= 10; redirectCount++) {
+        int redirectCount = 0;
+        while (true) {
             HttpRequest.Builder request =
                     HttpRequest.newBuilder(current)
                             .timeout(Duration.ofNanos(remaining))
@@ -236,6 +237,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             if (redirectCount == 10) {
                 throw new IOException("too many HTTP redirects");
             }
+            redirectCount++;
             current = redirect;
             if (((response.statusCode() == 301 || response.statusCode() == 302)
                             && "POST".equals(method))
@@ -249,7 +251,6 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                 throw new HttpTimeoutException("FerricStore HTTP redirect deadline exceeded");
             }
         }
-        throw new IOException("too many HTTP redirects");
     }
 
     private boolean shouldFollowRedirect(URI current, URI location) {
