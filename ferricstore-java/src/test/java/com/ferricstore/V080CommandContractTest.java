@@ -271,6 +271,15 @@ final class V080CommandContractTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> TopKReserveOptions.builder().width(8).build());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TopKReserveOptions.builder().depth(7).build());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TopKReserveOptions.builder().width(0).depth(7).build());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TopKReserveOptions.builder().width(8).depth(-1).build());
         for (Method method : TopKReserveOptions.Builder.class.getMethods()) {
             assertFalse(method.getName().toLowerCase(java.util.Locale.ROOT).contains("decay"));
         }

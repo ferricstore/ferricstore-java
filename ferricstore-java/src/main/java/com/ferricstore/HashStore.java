@@ -75,7 +75,7 @@ public final class HashStore {
     }
 
     public double hincrByFloat(String key, String field, double value) {
-        return Double.parseDouble(Resp.string(client.command("HINCRBYFLOAT", key, field, value)));
+        return Resp.decimal(client.command("HINCRBYFLOAT", key, field, value));
     }
 
     public boolean hsetnx(String key, String field, Object value) {

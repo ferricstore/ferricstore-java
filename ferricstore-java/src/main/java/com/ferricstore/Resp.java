@@ -213,7 +213,23 @@ final class Resp {
             return number.longValue();
         }
         String text = string(value);
-        return text.isEmpty() ? 0 : Long.parseLong(text);
+        if (text.isEmpty()) {
+            return 0;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException error) {
+            throw new FerricStoreException("expected integer response, got: " + text, error);
+        }
+    }
+
+    static double decimal(Object value) {
+        String text = string(value);
+        try {
+            return Double.parseDouble(text);
+        } catch (NumberFormatException error) {
+            throw new FerricStoreException("expected decimal response, got: " + text, error);
+        }
     }
 
     static Object decode(Codec codec, Object value) {
@@ -255,6 +271,9 @@ final class Resp {
     }
 
     static Map<Object, Object> testMap(Object... pairs) {
+        if ((pairs.length & 1) != 0) {
+            throw new IllegalArgumentException("map entries must contain key/value pairs");
+        }
         Map<Object, Object> map = new HashMap<>();
         for (int i = 0; i < pairs.length; i += 2) {
             map.put(pairs[i], pairs[i + 1]);

@@ -10,6 +10,7 @@ import java.util.List;
 final class NativeCompactResponseCodec {
     private static final int COMPACT_KV_MGET = 0x83;
     private static final int COMPACT_KV_MGET_FIXED = 0x89;
+    private static final int MAX_COLLECTION_ITEMS = 1_000_000;
 
     private NativeCompactResponseCodec() {}
 
@@ -40,11 +41,12 @@ final class NativeCompactResponseCodec {
 
     private static List<Object> decodeKvMget(ByteBuffer input, String codec) {
         long count = readUnsignedInt(input, codec);
-        if (count > Integer.MAX_VALUE || count > input.remaining()) {
+        if (count > MAX_COLLECTION_ITEMS || count > input.remaining()) {
             throw malformed(codec);
         }
-        List<Object> values = new ArrayList<>((int) count);
-        for (int index = 0; index < count; index++) {
+        int itemCount = (int) count;
+        List<Object> values = new ArrayList<>(itemCount);
+        for (int index = 0; index < itemCount; index++) {
             require(input, 1, codec);
             int present = Byte.toUnsignedInt(input.get());
             if (present == 0) {
@@ -68,14 +70,16 @@ final class NativeCompactResponseCodec {
         } catch (ArithmeticException error) {
             throw malformed(codec, error);
         }
-        if (count > Integer.MAX_VALUE
+        if (count > MAX_COLLECTION_ITEMS
                 || size > Integer.MAX_VALUE
                 || payloadBytes != input.remaining()) {
             throw malformed(codec);
         }
-        List<Object> values = new ArrayList<>((int) count);
-        for (int index = 0; index < count; index++) {
-            values.add(readFixedBinary(input, (int) size));
+        int itemCount = (int) count;
+        int itemSize = (int) size;
+        List<Object> values = new ArrayList<>(itemCount);
+        for (int index = 0; index < itemCount; index++) {
+            values.add(readFixedBinary(input, itemSize));
         }
         return Collections.unmodifiableList(values);
     }

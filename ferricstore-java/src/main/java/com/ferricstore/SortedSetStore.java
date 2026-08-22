@@ -65,8 +65,7 @@ public final class SortedSetStore {
     }
 
     public double zincrBy(String key, double amount, Object member) {
-        return Double.parseDouble(
-                Resp.string(client.command("ZINCRBY", key, amount, client.codec().encode(member))));
+        return Resp.decimal(client.command("ZINCRBY", key, amount, client.codec().encode(member)));
     }
 
     public long zcount(String key, Object min, Object max) {
