@@ -6,7 +6,7 @@ import com.ferricstore.Codec;
 import com.ferricstore.FerricStoreClient;
 import com.ferricstore.JsonCodec;
 import com.ferricstore.QueueClient;
-import com.ferricstore.RedisExecutor;
+import com.ferricstore.CommandExecutor;
 import com.ferricstore.WorkflowClient;
 import com.ferricstore.spring.statemachine.FerricFlowStateMachine;
 import org.junit.jupiter.api.Test;
@@ -69,7 +69,7 @@ final class FerricStoreAutoConfigurationTest {
     static class TestClientConfiguration {
         @Bean
         FerricStoreClient ferricStoreClient(Codec codec) {
-            RedisExecutor executor = args -> "OK";
+            CommandExecutor executor = args -> "OK";
             return FerricStoreClient.fromExecutor(executor, codec);
         }
     }

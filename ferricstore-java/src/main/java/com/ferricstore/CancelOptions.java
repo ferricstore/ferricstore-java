@@ -9,6 +9,11 @@ public record CancelOptions(
         Long ttlMs,
         long nowMs,
         boolean returnRecord) {
+    public CancelOptions {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireFencingToken(fencingToken);
+    }
+
     public static Builder builder(String id, long fencingToken) {
         return new Builder(id, fencingToken);
     }

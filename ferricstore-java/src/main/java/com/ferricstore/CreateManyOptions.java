@@ -15,6 +15,7 @@ public record CreateManyOptions(
         Boolean idempotent,
         Boolean independent,
         Long retentionTtlMs,
+        MaxActiveMs maxActiveMs,
         Map<String, ?> values,
         Map<String, String> valueRefs) {
     public CreateManyOptions {
@@ -38,6 +39,7 @@ public record CreateManyOptions(
         private Boolean idempotent;
         private Boolean independent;
         private Long retentionTtlMs;
+        private MaxActiveMs maxActiveMs;
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
 
@@ -86,6 +88,16 @@ public record CreateManyOptions(
             return this;
         }
 
+        public Builder maxActiveMs(long value) {
+            this.maxActiveMs = MaxActiveMs.of(value);
+            return this;
+        }
+
+        public Builder maxActiveMs(MaxActiveMs value) {
+            this.maxActiveMs = value;
+            return this;
+        }
+
         public Builder value(String name, Object value) {
             this.values.put(name, value);
             return this;
@@ -118,6 +130,7 @@ public record CreateManyOptions(
                     idempotent,
                     independent,
                     retentionTtlMs,
+                    maxActiveMs,
                     Map.copyOf(values),
                     Map.copyOf(valueRefs));
         }

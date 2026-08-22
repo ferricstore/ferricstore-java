@@ -86,7 +86,7 @@ final class FerricStoreWorkerTest {
                 1L);
     }
 
-    private static final class WorkerExecutor implements RedisExecutor {
+    private static final class WorkerExecutor implements CommandExecutor {
         private final Object claimResponse;
         private final List<List<Object>> calls = Collections.synchronizedList(new ArrayList<>());
 

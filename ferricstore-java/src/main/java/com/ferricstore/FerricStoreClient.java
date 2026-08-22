@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class FerricStoreClient implements AutoCloseable {
-    private final RedisExecutor executor;
+    private final CommandExecutor executor;
     private final AutoCloseable closeable;
     private final Codec codec;
     private final KeyValueStore kv;
@@ -32,7 +32,7 @@ public final class FerricStoreClient implements AutoCloseable {
     private final TopKStore topk;
     private final TDigestStore tdigest;
 
-    private FerricStoreClient(RedisExecutor executor, AutoCloseable closeable, Codec codec) {
+    private FerricStoreClient(CommandExecutor executor, AutoCloseable closeable, Codec codec) {
         this.executor = executor;
         this.closeable = closeable;
         this.codec = codec == null ? new RawCodec() : codec;
@@ -53,20 +53,20 @@ public final class FerricStoreClient implements AutoCloseable {
         this.tdigest = new TDigestStore(this);
     }
 
-    public static FerricStoreClient connect(String redisUri) {
-        return connect(redisUri, new RawCodec());
+    public static FerricStoreClient connect(String ferricUri) {
+        return connect(ferricUri, new RawCodec());
     }
 
-    public static FerricStoreClient connect(String redisUri, Codec codec) {
-        JedisRedisExecutor executor = JedisRedisExecutor.connect(redisUri);
+    public static FerricStoreClient connect(String ferricUri, Codec codec) {
+        NativeExecutor executor = NativeExecutor.connect(ferricUri);
         return new FerricStoreClient(executor, executor, codec);
     }
 
-    public static FerricStoreClient fromExecutor(RedisExecutor executor) {
+    public static FerricStoreClient fromExecutor(CommandExecutor executor) {
         return fromExecutor(executor, new RawCodec());
     }
 
-    public static FerricStoreClient fromExecutor(RedisExecutor executor, Codec codec) {
+    public static FerricStoreClient fromExecutor(CommandExecutor executor, Codec codec) {
         return new FerricStoreClient(executor, null, codec);
     }
 
@@ -168,6 +168,7 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "PRIORITY", options.priority());
         appendBool(cmd, "IDEMPOTENT", options.idempotent());
         append(cmd, "RETENTION_TTL_MS", options.retentionTtlMs());
+        FlowMaxActive.append(cmd, options.maxActiveMs());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
         appendReturnRecord(cmd, options.returnRecord());
         Object response = command(cmd);
@@ -185,6 +186,7 @@ public final class FerricStoreClient implements AutoCloseable {
                         .correlationId(options.correlationId())
                         .runAtMs(options.runAtMs())
                         .nowMs(options.nowMs())
+                        .maxActiveMs(options.maxActiveMs())
                         .values(options.values())
                         .valueRefs(options.valueRefs())
                         .returnRecord(options.returnRecord());
@@ -231,10 +233,18 @@ public final class FerricStoreClient implements AutoCloseable {
         appendBool(cmd, "IDEMPOTENT", options.idempotent());
         appendBool(cmd, "INDEPENDENT", options.independent());
         append(cmd, "RETENTION_TTL_MS", options.retentionTtlMs());
+        FlowMaxActive.append(cmd, options.maxActiveMs());
+        boolean mapped = options.items().stream().anyMatch(item -> item.maxActiveMs() != null);
         boolean extended =
                 options.items().stream()
                         .anyMatch(item -> !item.values().isEmpty() || !item.valueRefs().isEmpty());
-        if (extended) {
+        if (mapped) {
+            cmd.add("ITEMS_MAPS");
+            cmd.add(options.items().size());
+            for (CreateItem item : options.items()) {
+                cmd.add(createItemMap(item, options));
+            }
+        } else if (extended) {
             cmd.add("ITEMS_EXT");
             cmd.add(options.items().size());
             for (CreateItem item : options.items()) {
@@ -255,6 +265,33 @@ public final class FerricStoreClient implements AutoCloseable {
             }
         }
         return command(cmd);
+    }
+
+    public FlowRecord startAndClaim(StartAndClaimOptions options) {
+        List<Object> cmd =
+                args(
+                        "FLOW.START_AND_CLAIM",
+                        options.id(),
+                        "TYPE",
+                        options.type(),
+                        "INITIAL_STATE",
+                        options.initialState(),
+                        "WORKER",
+                        options.worker(),
+                        "LEASE_MS",
+                        options.leaseMs(),
+                        "NOW",
+                        options.nowMs() == 0 ? nowMs() : options.nowMs());
+        append(cmd, "PARTITION", options.partitionKey());
+        appendEncoded(cmd, "PAYLOAD", codec, options.payload());
+        append(cmd, "PARENT_FLOW_ID", options.parentFlowId());
+        append(cmd, "ROOT_FLOW_ID", options.rootFlowId());
+        append(cmd, "CORRELATION_ID", options.correlationId());
+        append(cmd, "PRIORITY", options.priority());
+        append(cmd, "RETENTION_TTL_MS", options.retentionTtlMs());
+        FlowMaxActive.append(cmd, options.maxActiveMs());
+        appendNamedValues(cmd, codec, options.values(), options.valueRefs());
+        return Resp.optionalRecord(command(cmd), codec);
     }
 
     public Object valuePut(
@@ -623,13 +660,13 @@ public final class FerricStoreClient implements AutoCloseable {
     }
 
     public Object spawnChildren(
-            String parentId,
+            String parentFlowId,
             List<ChildSpec> children,
             String partitionKey,
             String leaseToken,
             Long fencingToken) {
         SpawnChildrenOptions.Builder builder =
-                SpawnChildrenOptions.builder(parentId, children)
+                SpawnChildrenOptions.builder(parentFlowId, children)
                         .partitionKey(partitionKey)
                         .leaseToken(leaseToken);
         if (fencingToken != null) {
@@ -642,7 +679,7 @@ public final class FerricStoreClient implements AutoCloseable {
         List<Object> cmd =
                 args(
                         "FLOW.SPAWN_CHILDREN",
-                        options.parentId(),
+                        options.parentFlowId(),
                         "GROUP",
                         options.groupId(),
                         "WAIT",
@@ -658,6 +695,7 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "FROM_STATE", options.fromState());
         append(cmd, "ON_CHILD_FAILED", options.onChildFailed());
         append(cmd, "ON_PARENT_CLOSED", options.onParentClosed());
+        FlowMaxActive.append(cmd, options.maxActiveMs());
         boolean mixed =
                 options.children().stream()
                         .anyMatch(
@@ -668,7 +706,15 @@ public final class FerricStoreClient implements AutoCloseable {
                 options.children().stream()
                         .anyMatch(
                                 child -> !child.values().isEmpty() || !child.valueRefs().isEmpty());
-        if (extended) {
+        boolean mapped =
+                options.children().stream().anyMatch(child -> child.maxActiveMs() != null);
+        if (mapped) {
+            cmd.add("ITEMS_MAPS");
+            cmd.add(options.children().size());
+            for (ChildSpec child : options.children()) {
+                cmd.add(childItemMap(child, options));
+            }
+        } else if (extended) {
             cmd.add("ITEMS_EXT");
             cmd.add(options.children().size());
             for (ChildSpec child : options.children()) {
@@ -707,9 +753,11 @@ public final class FerricStoreClient implements AutoCloseable {
         return command(cmd);
     }
 
-    public Object installPolicy(String type, String state, RetryPolicy retry, Long retentionTtlMs) {
+    public Object installPolicy(String type, FlowPolicyOptions options) {
         List<Object> cmd = args("FLOW.POLICY.SET", type);
-        append(cmd, "STATE", state);
+        FlowMaxActive.append(cmd, options.maxActiveMs());
+        append(cmd, "STATE", options.state());
+        RetryPolicy retry = options.retry();
         if (retry != null) {
             append(cmd, "MAX_RETRIES", retry.maxRetries());
             append(cmd, "BACKOFF", retry.backoff());
@@ -718,13 +766,81 @@ public final class FerricStoreClient implements AutoCloseable {
             append(cmd, "JITTER_PCT", retry.jitterPct());
             append(cmd, "EXHAUSTED_TO", retry.exhaustedTo());
         }
-        append(cmd, "RETENTION_TTL_MS", retentionTtlMs);
+        append(cmd, "RETENTION_TTL_MS", options.retentionTtlMs());
         return command(cmd);
     }
 
     public Map<String, Object> policyGet(String type, String state) {
         List<Object> cmd = args("FLOW.POLICY.GET", type);
         append(cmd, "STATE", state);
+        return Resp.parseKv(command(cmd));
+    }
+
+    public Map<String, Object> effectReserve(
+            String id, String effectKey, String effectType, EffectReserveOptions options) {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireText(effectKey, "effect key");
+        FlowValidation.requireText(effectType, "effect type");
+        List<Object> cmd =
+                args(
+                        "FLOW.EFFECT.RESERVE",
+                        id,
+                        "EFFECT_KEY",
+                        effectKey,
+                        "EFFECT_TYPE",
+                        effectType);
+        append(cmd, "PARTITION", options.partitionKey());
+        append(cmd, "LEASE_TOKEN", options.leaseToken());
+        append(cmd, "FENCING", options.fencingToken());
+        append(cmd, "OPERATION_DIGEST", options.operationDigest());
+        append(cmd, "IDEMPOTENCY_KEY", options.idempotencyKey());
+        append(cmd, "GOVERNANCE_SCOPE", options.governanceScope());
+        append(cmd, "NOW", options.nowMs());
+        return Resp.parseKv(command(cmd));
+    }
+
+    public Map<String, Object> effectConfirm(
+            String id, String effectKey, EffectStatusOptions options) {
+        return effectStatus("FLOW.EFFECT.CONFIRM", id, effectKey, options);
+    }
+
+    public Map<String, Object> effectFail(
+            String id, String effectKey, EffectStatusOptions options) {
+        return effectStatus("FLOW.EFFECT.FAIL", id, effectKey, options);
+    }
+
+    public Map<String, Object> effectCompensate(
+            String id, String effectKey, EffectStatusOptions options) {
+        return effectStatus("FLOW.EFFECT.COMPENSATE", id, effectKey, options);
+    }
+
+    public Map<String, Object> effectGet(String id, String effectKey, String partitionKey) {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireText(effectKey, "effect key");
+        List<Object> cmd = args("FLOW.EFFECT.GET", id, "EFFECT_KEY", effectKey);
+        append(cmd, "PARTITION", partitionKey);
+        Object response = command(cmd);
+        if (response == null
+                || response instanceof List<?> list && list.isEmpty()
+                || response instanceof Map<?, ?> map && map.isEmpty()) {
+            return null;
+        }
+        return Resp.parseKv(response);
+    }
+
+    private Map<String, Object> effectStatus(
+            String command, String id, String effectKey, EffectStatusOptions options) {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireText(effectKey, "effect key");
+        List<Object> cmd = args(command, id, "EFFECT_KEY", effectKey);
+        append(cmd, "PARTITION", options.partitionKey());
+        append(cmd, "LEASE_TOKEN", options.leaseToken());
+        append(cmd, "FENCING", options.fencingToken());
+        append(cmd, "EXTERNAL_ID", options.externalId());
+        append(cmd, "ERROR", options.error());
+        append(cmd, "REASON", options.reason());
+        append(cmd, "LATENCY_MS", options.latencyMs());
+        append(cmd, "NOW", options.nowMs());
         return Resp.parseKv(command(cmd));
     }
 
@@ -774,6 +890,9 @@ public final class FerricStoreClient implements AutoCloseable {
     }
 
     public FetchOrComputeResult fetchOrCompute(String key, long ttlMs, String hint) {
+        if (ttlMs <= 0) {
+            throw new IllegalArgumentException("FETCH_OR_COMPUTE ttlMs must be positive");
+        }
         List<Object> response =
                 Resp.list(
                         hint == null
@@ -781,22 +900,46 @@ public final class FerricStoreClient implements AutoCloseable {
                                 : command("FETCH_OR_COMPUTE", key, ttlMs, hint));
         String status = response.isEmpty() ? "" : Resp.string(response.getFirst());
         if ("hit".equals(status)) {
+            if (response.size() != 2) {
+                throw new FerricStoreException(
+                        "FETCH_OR_COMPUTE hit response must contain exactly two values");
+            }
             Object value =
-                    response.size() > 1 && response.get(1) instanceof byte[] bytes
+                    response.get(1) instanceof byte[] bytes
                             ? codec.decode(bytes)
-                            : response.size() > 1 ? response.get(1) : null;
-            return new FetchOrComputeResult(status, value, null, true, false);
+                            : response.get(1);
+            return new FetchOrComputeResult(status, value, null, null, true, false);
         }
-        String token = response.size() > 1 ? Resp.string(response.get(1)) : null;
-        return new FetchOrComputeResult(status, null, token, false, true);
+        if (!"compute".equals(status) || response.size() != 3) {
+            throw new FerricStoreException(
+                    "FETCH_OR_COMPUTE compute response must be [compute, hint, ownership_token]");
+        }
+        String computeHint = Resp.string(response.get(1));
+        Object token = ownershipToken(response.get(2));
+        return new FetchOrComputeResult(status, null, computeHint, token, false, true);
     }
 
-    public boolean fetchOrComputeResult(String key, Object value, long ttlMs) {
-        return CommandArgs.ok(command("FETCH_OR_COMPUTE_RESULT", key, codec.encode(value), ttlMs));
+    public boolean fetchOrComputeResult(
+            String key, Object ownershipToken, Object value, long ttlMs) {
+        if (ttlMs <= 0) {
+            throw new IllegalArgumentException("FETCH_OR_COMPUTE_RESULT ttlMs must be positive");
+        }
+        return CommandArgs.ok(
+                command(
+                        "FETCH_OR_COMPUTE_RESULT",
+                        key,
+                        ownershipToken(ownershipToken),
+                        codec.encode(value),
+                        ttlMs));
     }
 
-    public boolean fetchOrComputeError(String key, String message) {
-        return CommandArgs.ok(command("FETCH_OR_COMPUTE_ERROR", key, message));
+    public boolean fetchOrComputeError(String key, Object ownershipToken, String message) {
+        return CommandArgs.ok(
+                command(
+                        "FETCH_OR_COMPUTE_ERROR",
+                        key,
+                        ownershipToken(ownershipToken),
+                        message));
     }
 
     public Map<String, Object> clusterHealth() {
@@ -979,6 +1122,52 @@ public final class FerricStoreClient implements AutoCloseable {
                 });
     }
 
+    private Map<String, Object> createItemMap(CreateItem item, CreateManyOptions shared) {
+        Map<String, Object> mapped = new LinkedHashMap<>();
+        mapped.put("id", item.id());
+        mapped.put("payload", codec.encode(item.payload()));
+        if (item.partitionKey() != null && !item.partitionKey().isEmpty()) {
+            mapped.put("partition_key", item.partitionKey());
+        }
+        putEncodedValues(mapped, mergeValues(shared.values(), item.values()));
+        Map<String, String> refs = mergeRefs(shared.valueRefs(), item.valueRefs());
+        if (!refs.isEmpty()) {
+            mapped.put("value_refs", refs);
+        }
+        FlowMaxActive.put(mapped, item.maxActiveMs());
+        return mapped;
+    }
+
+    private Map<String, Object> childItemMap(ChildSpec child, SpawnChildrenOptions shared) {
+        Map<String, Object> mapped = new LinkedHashMap<>();
+        mapped.put("id", child.id());
+        mapped.put("type", child.type());
+        mapped.put("payload", codec.encode(child.payload()));
+        String partition =
+                child.partitionKey() == null || child.partitionKey().isEmpty()
+                        ? shared.partitionKey()
+                        : child.partitionKey();
+        if (partition != null && !partition.isEmpty()) {
+            mapped.put("partition_key", partition);
+        }
+        putEncodedValues(mapped, mergeValues(shared.values(), child.values()));
+        Map<String, String> refs = mergeRefs(shared.valueRefs(), child.valueRefs());
+        if (!refs.isEmpty()) {
+            mapped.put("value_refs", refs);
+        }
+        FlowMaxActive.put(mapped, child.maxActiveMs());
+        return mapped;
+    }
+
+    private void putEncodedValues(Map<String, Object> mapped, Map<String, ?> values) {
+        if (values.isEmpty()) {
+            return;
+        }
+        Map<String, Object> encoded = new LinkedHashMap<>();
+        values.forEach((name, value) -> encoded.put(name, codec.encode(value)));
+        mapped.put("values", encoded);
+    }
+
     private void appendClaimedItems(
             List<Object> cmd, String partitionKey, List<ClaimedItem> items) {
         cmd.add("ITEMS");
@@ -1124,6 +1313,17 @@ public final class FerricStoreClient implements AutoCloseable {
             throw new IllegalArgumentException("mixed createMany items require partition key");
         }
         return item.partitionKey();
+    }
+
+    private static Object ownershipToken(Object value) {
+        if (value instanceof String token && !token.isEmpty()) {
+            return token;
+        }
+        if (value instanceof byte[] token && token.length > 0) {
+            return token;
+        }
+        throw new IllegalArgumentException(
+                "fetch_or_compute ownership token must be a non-empty string or byte array");
     }
 
     private static long nowMs() {

@@ -10,6 +10,12 @@ public record FailOptions(
         Long ttlMs,
         long nowMs,
         boolean returnRecord) {
+    public FailOptions {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireText(leaseToken, "flow lease token");
+        FlowValidation.requireFencingToken(fencingToken);
+    }
+
     public static Builder builder(String id, String leaseToken, long fencingToken) {
         return new Builder(id, leaseToken, fencingToken);
     }

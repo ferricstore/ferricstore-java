@@ -10,6 +10,12 @@ public record RetryOptions(
         long runAtMs,
         long nowMs,
         boolean returnRecord) {
+    public RetryOptions {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireText(leaseToken, "flow lease token");
+        FlowValidation.requireFencingToken(fencingToken);
+    }
+
     public static Builder builder(String id, String leaseToken, long fencingToken) {
         return new Builder(id, leaseToken, fencingToken);
     }

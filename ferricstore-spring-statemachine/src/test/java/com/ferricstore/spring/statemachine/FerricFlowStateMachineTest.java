@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.ferricstore.FerricStoreClient;
 import com.ferricstore.JsonCodec;
-import com.ferricstore.RedisExecutor;
+import com.ferricstore.CommandExecutor;
 import com.ferricstore.Workflow;
 import com.ferricstore.WorkflowClient;
 import java.util.ArrayList;
@@ -263,7 +263,7 @@ final class FerricFlowStateMachineTest {
                 1L);
     }
 
-    private static final class CapturingExecutor implements RedisExecutor {
+    private static final class CapturingExecutor implements CommandExecutor {
         private final Object claimResponse;
         private final List<List<Object>> calls = Collections.synchronizedList(new ArrayList<>());
 

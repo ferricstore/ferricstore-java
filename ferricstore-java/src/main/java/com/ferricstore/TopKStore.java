@@ -10,7 +10,22 @@ public final class TopKStore {
     }
 
     public boolean reserve(String key, long k) {
-        return CommandArgs.ok(client.command("TOPK.RESERVE", key, k));
+        return reserve(key, k, TopKReserveOptions.builder().build());
+    }
+
+    public boolean reserve(String key, long k, TopKReserveOptions options) {
+        if (key == null || key.isEmpty()) {
+            throw new IllegalArgumentException("TOPK.RESERVE key must not be empty");
+        }
+        if (k <= 0) {
+            throw new IllegalArgumentException("TOPK.RESERVE k must be positive");
+        }
+        List<Object> command = CommandArgs.args("TOPK.RESERVE", key, k);
+        if (options.width() != null) {
+            command.add(options.width());
+            command.add(options.depth());
+        }
+        return CommandArgs.ok(client.command(command));
     }
 
     public List<Object> add(String key, Object... elements) {

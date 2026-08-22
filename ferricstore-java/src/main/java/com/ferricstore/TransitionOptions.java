@@ -18,6 +18,11 @@ public record TransitionOptions(
         Map<String, String> valueRefs,
         boolean returnRecord) {
     public TransitionOptions {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireText(fromState, "flow from state");
+        FlowValidation.requireText(toState, "flow to state");
+        FlowValidation.requireText(leaseToken, "flow lease token");
+        FlowValidation.requireFencingToken(fencingToken);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
     }

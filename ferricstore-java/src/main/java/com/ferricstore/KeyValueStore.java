@@ -1,6 +1,7 @@
 package com.ferricstore;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -24,16 +25,32 @@ public final class KeyValueStore {
     }
 
     public boolean set(String key, Object value) {
-        return CommandArgs.ok(client.command("SET", key, client.codec().encode(value)));
+        return Boolean.TRUE.equals(set(key, value, SetOptions.builder().build()));
     }
 
-    public boolean set(String key, Object value, Long pxMs, Boolean nx) {
+    public Object set(String key, Object value, SetOptions options) {
         List<Object> args = CommandArgs.args("SET", key, client.codec().encode(value));
-        CommandArgs.append(args, "PX", pxMs);
-        if (Boolean.TRUE.equals(nx)) {
+        CommandArgs.append(args, "EX", options.exSeconds());
+        CommandArgs.append(args, "PX", options.pxMilliseconds());
+        CommandArgs.append(args, "EXAT", options.exatSeconds());
+        CommandArgs.append(args, "PXAT", options.pxatMillis());
+        if (options.nx()) {
             args.add("NX");
         }
-        return CommandArgs.ok(client.command(args));
+        if (options.xx()) {
+            args.add("XX");
+        }
+        if (options.get()) {
+            args.add("GET");
+        }
+        if (options.keepTtl()) {
+            args.add("KEEPTTL");
+        }
+        Object response = client.command(args);
+        if (!options.get()) {
+            return response == null ? null : CommandArgs.ok(response);
+        }
+        return response instanceof byte[] bytes ? client.codec().decode(bytes) : response;
     }
 
     public long del(String... keys) {
@@ -57,13 +74,24 @@ public final class KeyValueStore {
     }
 
     public boolean mset(Map<String, ?> entries) {
+        List<String> keys = validatedBulkKeys("MSET", entries);
         List<Object> args = CommandArgs.args("MSET");
-        entries.forEach(
-                (key, value) -> {
-                    args.add(key);
-                    args.add(client.codec().encode(value));
-                });
+        for (String key : keys) {
+            args.add(key);
+            args.add(encoded(entries.get(key), key));
+        }
         return CommandArgs.ok(client.command(args));
+    }
+
+    public boolean msetnx(Map<String, ?> entries) {
+        List<String> keys = validatedBulkKeys("MSETNX", entries);
+        List<Object> args = CommandArgs.args("MSETNX");
+        for (String key : keys) {
+            args.add(key);
+            args.add(encoded(entries.get(key), key));
+        }
+        Object response = client.command(args);
+        return Boolean.TRUE.equals(response) || Resp.number(response) == 1;
     }
 
     public long incr(String key) {
@@ -103,5 +131,23 @@ public final class KeyValueStore {
         CommandArgs.append(args, "MATCH", match);
         CommandArgs.append(args, "COUNT", count);
         return client.command(args);
+    }
+
+    private List<String> validatedBulkKeys(String command, Map<String, ?> entries) {
+        if (entries == null || entries.isEmpty()) {
+            throw new IllegalArgumentException(command + " requires at least one key/value pair");
+        }
+        List<String> keys = new ArrayList<>(entries.keySet());
+        keys.sort(Comparator.naturalOrder());
+        HashSlot.requireSame(command, keys);
+        return keys;
+    }
+
+    private byte[] encoded(Object value, String key) {
+        byte[] encoded = client.codec().encode(value);
+        if (encoded == null) {
+            throw new IllegalArgumentException("value for key " + key + " must not encode to null");
+        }
+        return encoded;
     }
 }

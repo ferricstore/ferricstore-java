@@ -36,12 +36,26 @@ final class Resp {
 
     static FlowRecord record(Object value, Codec codec) {
         Map<String, Object> map = map(value);
+        Object error = decodeStructured(codec, map.get("error"));
+        Map<String, Object> errorFields = stringObjectMap(error);
+        String failureReason = optionalString(errorFields.get("reason"));
+        Long maxActiveMs = positiveLong(map.get("max_active_ms"));
+        if (maxActiveMs == null) {
+            maxActiveMs = positiveLong(errorFields.get("max_active_ms"));
+        }
+        if ("max_active_ms".equals(failureReason) && maxActiveMs == null) {
+            throw new FerricStoreException(
+                    "FLOW max_active_ms failure response is missing a positive max_active_ms");
+        }
         return new FlowRecord(
                 string(map.get("id")),
                 string(map.get("type")),
                 string(map.get("state")),
                 optionalString(map.get("partition_key")),
                 decode(codec, map.get("payload")),
+                error,
+                failureReason,
+                maxActiveMs,
                 optionalString(map.get("lease_token")),
                 number(map.get("fencing_token")),
                 number(map.get("version")),
@@ -51,6 +65,23 @@ final class Resp {
                 decodeValueMap(codec, map.get("values")),
                 stringObjectMap(map.get("value_refs")),
                 map);
+    }
+
+    private static Object decodeStructured(Codec codec, Object value) {
+        return value instanceof byte[] bytes ? codec.decode(bytes) : normalize(value);
+    }
+
+    private static Long positiveLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        long parsed;
+        try {
+            parsed = value instanceof Number number ? number.longValue() : Long.parseLong(string(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+        return parsed > 0 ? parsed : null;
     }
 
     static List<ClaimedItem> claimedItems(Object value) {

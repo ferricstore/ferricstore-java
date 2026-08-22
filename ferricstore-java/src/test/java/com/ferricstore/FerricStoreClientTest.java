@@ -644,7 +644,7 @@ final class FerricStoreClientTest {
         }
     }
 
-    private static final class FakeExecutor implements RedisExecutor {
+    private static final class FakeExecutor implements CommandExecutor {
         private final List<Object> responses = new ArrayList<>();
         private final List<List<Object>> calls = new ArrayList<>();
 

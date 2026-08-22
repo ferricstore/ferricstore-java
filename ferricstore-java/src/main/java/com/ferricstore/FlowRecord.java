@@ -8,6 +8,9 @@ public record FlowRecord(
         String state,
         String partitionKey,
         Object payload,
+        Object error,
+        String failureReason,
+        Long maxActiveMs,
         String leaseToken,
         long fencingToken,
         long version,
@@ -21,6 +24,41 @@ public record FlowRecord(
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
         raw = ImmutableCopies.map(raw);
+    }
+
+    public FlowRecord(
+            String id,
+            String type,
+            String state,
+            String partitionKey,
+            Object payload,
+            String leaseToken,
+            long fencingToken,
+            long version,
+            String parentFlowId,
+            String rootFlowId,
+            String correlationId,
+            Map<String, Object> values,
+            Map<String, Object> valueRefs,
+            Map<String, Object> raw) {
+        this(
+                id,
+                type,
+                state,
+                partitionKey,
+                payload,
+                null,
+                null,
+                null,
+                leaseToken,
+                fencingToken,
+                version,
+                parentFlowId,
+                rootFlowId,
+                correlationId,
+                values,
+                valueRefs,
+                raw);
     }
 
     public <T> T payloadAs(Class<T> type) {

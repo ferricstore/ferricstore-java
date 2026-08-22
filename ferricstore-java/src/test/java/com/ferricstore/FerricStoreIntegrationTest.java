@@ -79,11 +79,20 @@ final class FerricStoreIntegrationTest {
 
                 FetchOrComputeResult first = client.fetchOrCompute(cacheKey, 60_000, "integration");
                 assertTrue(first.shouldCompute());
-                assertTrue(client.fetchOrComputeResult(cacheKey, Map.of("computed", true), 60_000));
+                assertTrue(
+                        client.fetchOrComputeResult(
+                                cacheKey,
+                                first.ownershipToken(),
+                                Map.of("computed", true),
+                                60_000));
                 FetchOrComputeResult cached = client.fetchOrCompute(cacheKey, 60_000, null);
                 assertTrue(cached.hit());
                 assertEquals(Map.of("computed", true), cached.value());
-                assertTrue(client.fetchOrComputeError(prefix + "cache-error", "boom"));
+                FetchOrComputeResult failed =
+                        client.fetchOrCompute(prefix + "cache-error", 60_000, "integration");
+                assertTrue(
+                        client.fetchOrComputeError(
+                                prefix + "cache-error", failed.ownershipToken(), "boom"));
 
                 assertTrue(client.serverInfo("server").contains("#"));
                 assertFalse(client.clusterHealth().isEmpty());
@@ -221,7 +230,13 @@ final class FerricStoreIntegrationTest {
 
     private static void assertStringCommands(FerricStoreClient client, String prefix) {
         String key = prefix + "string";
-        assertTrue(client.kv().set(key, "abc", 60_000L, null));
+        assertEquals(
+                true,
+                client.kv()
+                        .set(
+                                key,
+                                "abc",
+                                SetOptions.builder().pxMilliseconds(60_000L).build()));
         assertEquals("abc", client.kv().get(key, String.class));
         assertEquals(1, client.kv().exists(key));
         assertEquals("abc", text(client.kv().mget(List.of(key, prefix + "missing")).getFirst()));

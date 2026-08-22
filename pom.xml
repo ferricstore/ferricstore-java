@@ -48,7 +48,6 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <jackson.version>2.20.0</jackson.version>
-    <jedis.version>7.5.2</jedis.version>
     <junit.version>6.1.0</junit.version>
     <spring-boot.version>4.0.6</spring-boot.version>
     <spring-statemachine.version>4.0.1</spring-statemachine.version>

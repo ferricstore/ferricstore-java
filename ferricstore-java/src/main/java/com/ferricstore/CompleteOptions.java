@@ -16,6 +16,9 @@ public record CompleteOptions(
         Map<String, String> valueRefs,
         boolean returnRecord) {
     public CompleteOptions {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireText(leaseToken, "flow lease token");
+        FlowValidation.requireFencingToken(fencingToken);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
     }
