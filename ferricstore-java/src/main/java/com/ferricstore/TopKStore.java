@@ -44,6 +44,30 @@ public final class TopKStore {
         return Resp.list(client.command(args));
     }
 
+    public List<Object> incrBy(String key, Object... itemIncrementPairs) {
+        List<Object> args = CommandArgs.args("TOPK.INCRBY", key);
+        for (int index = 0; index < itemIncrementPairs.length; index++) {
+            Object value = itemIncrementPairs[index];
+            args.add(index % 2 == 0 ? client.codec().encode(value) : value);
+        }
+        return Resp.list(client.command(args));
+    }
+
+    public List<Object> list(String key, boolean withCount) {
+        return Resp.list(
+                withCount
+                        ? client.command("TOPK.LIST", key, "WITHCOUNT")
+                        : client.command("TOPK.LIST", key));
+    }
+
+    public List<Object> count(String key, Object... elements) {
+        List<Object> args = CommandArgs.args("TOPK.COUNT", key);
+        for (Object element : elements) {
+            args.add(client.codec().encode(element));
+        }
+        return Resp.list(client.command(args));
+    }
+
     public Object info(String key) {
         return client.command("TOPK.INFO", key);
     }

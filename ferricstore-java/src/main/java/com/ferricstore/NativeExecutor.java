@@ -1,6 +1,5 @@
 package com.ferricstore;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -15,25 +14,49 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 
 /** Multiplexed TCP/TLS executor for FerricStore's native protocol v1. */
-public final class NativeExecutor implements CommandExecutor, AutoCloseable {
+public final class NativeExecutor implements SessionCommandExecutor, SessionExecutorFactory {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final int DATA_LANES = 32;
     private static final int MAX_REQUEST_BYTES = 64 * 1024 * 1024;
+    private static final int MAX_BUFFERED_EVENTS = 1_024;
+    private static final Object CLOSED_EVENT = new Object();
+    private static final Set<String> DEDICATED_SESSION_COMMANDS =
+            Set.of(
+                    "AUTH",
+                    "DISCARD",
+                    "EXEC",
+                    "HELLO",
+                    "MULTI",
+                    "PSUBSCRIBE",
+                    "PUNSUBSCRIBE",
+                    "QUIT",
+                    "RESET",
+                    "SELECT",
+                    "SUBSCRIBE",
+                    "UNSUBSCRIBE",
+                    "UNWATCH",
+                    "WATCH");
 
     private final Socket socket;
     private final InputStream input;
@@ -47,22 +70,39 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
                     NativeProtocol.DEFAULT_MAX_RESPONSE_BYTES,
                     NativeProtocol.DEFAULT_MAX_RESPONSE_CHUNKS);
     private final NativeEndpoint endpoint;
+    private final SSLContext sslContext;
+    private final boolean dedicatedSession;
     private final Thread readerThread;
+    private final BlockingQueue<Object> events = new ArrayBlockingQueue<>(MAX_BUFFERED_EVENTS);
+    private final AtomicReference<RuntimeException> eventFailure = new AtomicReference<>();
 
-    private volatile int maxFrameBytes = NativeProtocol.DEFAULT_MAX_RESPONSE_BYTES;
-    private volatile NegotiatedCapabilities negotiatedCapabilities;
-    private volatile boolean authenticated;
+    private final AtomicInteger maxFrameBytes =
+            new AtomicInteger(NativeProtocol.DEFAULT_MAX_RESPONSE_BYTES);
+    private final AtomicReference<NegotiatedCapabilities> negotiatedCapabilities =
+            new AtomicReference<>();
+    private final AtomicBoolean authenticated = new AtomicBoolean();
 
-    private NativeExecutor(NativeEndpoint endpoint, SSLContext sslContext) throws IOException {
+    private NativeExecutor(NativeEndpoint endpoint, SSLContext sslContext, boolean dedicatedSession)
+            throws IOException {
         this.endpoint = endpoint;
-        this.socket = connectSocket(endpoint, sslContext);
-        this.input = socket.getInputStream();
-        this.output = socket.getOutputStream();
-        this.readerThread =
-                Thread.ofPlatform()
-                        .daemon()
-                        .name("ferricstore-native-reader")
-                        .start(this::readLoop);
+        this.sslContext = sslContext;
+        this.dedicatedSession = dedicatedSession;
+        Socket connected = connectSocket(endpoint, sslContext);
+        this.socket = connected;
+        try {
+            this.input = connected.getInputStream();
+            this.output = connected.getOutputStream();
+        } catch (IOException | RuntimeException error) {
+            try {
+                connected.close();
+            } catch (IOException closeError) {
+                error.addSuppressed(closeError);
+            }
+            throw error;
+        }
+        this.readerThread = new Thread(this::readLoop, "ferricstore-native-reader");
+        this.readerThread.setDaemon(true);
+        this.readerThread.start();
     }
 
     public static NativeExecutor connect(String uri) {
@@ -72,26 +112,23 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
     /** Connects with an optional caller-provided TLS context for {@code ferrics://} URLs. */
     public static NativeExecutor connect(String uri, SSLContext sslContext) {
         NativeEndpoint endpoint = NativeEndpoint.parse(uri);
-        NativeExecutor executor = null;
         try {
-            executor = new NativeExecutor(endpoint, sslContext);
-            executor.initialize();
-            return executor;
+            NativeExecutor executor = new NativeExecutor(endpoint, sslContext, false);
+            try {
+                executor.initialize();
+                return executor;
+            } catch (RuntimeException error) {
+                executor.close();
+                throw error;
+            }
         } catch (IOException error) {
-            if (executor != null) {
-                executor.close();
-            }
-            throw new NativeProtocolException("failed to connect to FerricStore native endpoint", error);
-        } catch (RuntimeException error) {
-            if (executor != null) {
-                executor.close();
-            }
-            throw error;
+            throw new NativeProtocolException(
+                    "failed to connect to FerricStore native endpoint", error);
         }
     }
 
     public NegotiatedCapabilities negotiatedCapabilities() {
-        NegotiatedCapabilities current = negotiatedCapabilities;
+        NegotiatedCapabilities current = negotiatedCapabilities.get();
         if (current == null) {
             throw new IllegalStateException("FerricStore HELLO negotiation is not complete");
         }
@@ -99,18 +136,48 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
     }
 
     @Override
+    public SessionCommandExecutor openSession() {
+        try {
+            NativeExecutor session = new NativeExecutor(endpoint, sslContext, true);
+            try {
+                session.initialize();
+                return session;
+            } catch (RuntimeException error) {
+                session.close();
+                throw error;
+            }
+        } catch (IOException error) {
+            throw new NativeProtocolException(
+                    "failed to open dedicated FerricStore native session", error);
+        }
+    }
+
+    @Override
     public Object execute(List<Object> args) {
         List<Object> command = validatedCommand(args);
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("command", commandName(command.getFirst()));
-        payload.put("args", new ArrayList<>(command.subList(1, command.size())));
+        String name = commandName(command.get(0)).toUpperCase(Locale.ROOT);
+        if (!dedicatedSession && DEDICATED_SESSION_COMMANDS.contains(name)) {
+            throw new InvalidCommandException(
+                    name + " requires transaction() or pubsubSession() on native TCP/TLS");
+        }
         long laneId = laneFor(command);
+        FlowCommandEncoder.Prepared structured =
+                FlowCommandEncoder.prepare(name, command.subList(1, command.size()));
+        if (structured != null) {
+            return requestWithRetry(structured.opcode(), laneId, structured.payload());
+        }
 
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("command", name);
+        payload.put("args", new ArrayList<>(command.subList(1, command.size())));
+        return requestWithRetry(NativeProtocol.OP_COMMAND_EXEC, laneId, payload);
+    }
+
+    private Object requestWithRetry(int opcode, long laneId, Object payload) {
         int retries = 0;
         while (true) {
             try {
-                NativeResponseCodec.Response response =
-                        request(NativeProtocol.OP_COMMAND_EXEC, laneId, payload);
+                NativeResponseCodec.Response response = request(opcode, laneId, payload);
                 return NativeResponseCodec.requireOk(response);
             } catch (NativeServerException error) {
                 if (!NativeRetryPolicy.shouldRetry(error, retries)) {
@@ -123,10 +190,56 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
     }
 
     @Override
+    public Object flowQuery(String query, Map<String, ?> params) {
+        if (query == null || query.isBlank()) {
+            throw new IllegalArgumentException("Flow query must not be blank");
+        }
+        Objects.requireNonNull(params, "query params");
+        Map<String, Object> typedParams = new LinkedHashMap<>();
+        params.forEach(
+                (name, value) -> {
+                    if (name == null || name.isBlank()) {
+                        throw new IllegalArgumentException(
+                                "Flow query parameter names must not be blank");
+                    }
+                    typedParams.put(name, Objects.requireNonNull(value, "query parameter value"));
+                });
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("version", "FQL1");
+        payload.put("query", query);
+        payload.put("params", typedParams);
+        Object route = typedParams.getOrDefault("partition", query);
+        long laneId = laneForRoute(route);
+        return NativeResponseCodec.requireOk(
+                request(NativeProtocol.OP_FLOW_QUERY, laneId, payload));
+    }
+
+    @Override
     public void close() {
         terminate(
                 new NativeProtocolException(
                         "native executor closed with requests in flight; outcome is unknown"));
+    }
+
+    @Override
+    public Object pollEvent(Duration timeout) {
+        Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be non-negative");
+        }
+        try {
+            Object event = events.poll(durationToNanos(timeout), TimeUnit.NANOSECONDS);
+            if (event == CLOSED_EVENT) {
+                RuntimeException failure = eventFailure.get();
+                throw failure == null
+                        ? new NativeProtocolException("native event connection is closed")
+                        : failure;
+            }
+            return event;
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new NativeProtocolException("native event wait was interrupted", error);
+        }
     }
 
     private void initialize() {
@@ -137,10 +250,11 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
                 NativeResponseCodec.requireOk(request(NativeProtocol.OP_HELLO, 0, hello));
         NegotiatedCapabilities capabilities = NativeHelloContract.parse(helloValue);
         int effectiveLimit =
-                Math.min(NativeProtocol.DEFAULT_MAX_RESPONSE_BYTES, capabilities.maxResponseBytes());
+                Math.min(
+                        NativeProtocol.DEFAULT_MAX_RESPONSE_BYTES, capabilities.maxResponseBytes());
         assembler.reconfigure(effectiveLimit);
-        maxFrameBytes = effectiveLimit;
-        negotiatedCapabilities = capabilities;
+        maxFrameBytes.set(effectiveLimit);
+        negotiatedCapabilities.set(capabilities);
 
         if (capabilities.authRequired() && endpoint.password() == null) {
             throw new NativeProtocolException(
@@ -151,7 +265,7 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
                     Map.of("username", endpoint.username(), "password", endpoint.password());
             NativeResponseCodec.requireOk(request(NativeProtocol.OP_AUTH, 0, auth));
         }
-        authenticated = !capabilities.authRequired() || endpoint.password() != null;
+        authenticated.set(!capabilities.authRequired() || endpoint.password() != null);
     }
 
     private NativeResponseCodec.Response request(int opcode, long laneId, Object payload) {
@@ -182,6 +296,7 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
         return await(requestId, request);
     }
 
+    @SuppressWarnings("PMD.PreserveStackTrace") // ExecutionException is deliberately unwrapped.
     private NativeResponseCodec.Response await(long requestId, PendingRequest request) {
         try {
             return request.future().get(REQUEST_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
@@ -206,10 +321,21 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
     private void readLoop() {
         try {
             while (!closed.get()) {
-                NativeFrame frame = NativeFrame.readResponse(input, () -> maxFrameBytes);
+                NativeFrame frame = NativeFrame.readResponse(input, maxFrameBytes::get);
                 NativeResponseAssembler.Assembled assembled =
                         assembler.add(frame.identity(), frame.flags(), frame.body());
-                if (assembled == null || assembled.identity().requestId() == 0) {
+                if (assembled == null) {
+                    continue;
+                }
+                if (assembled.identity().requestId() == 0) {
+                    Object event =
+                            NativeResponseCodec.requireOk(
+                                    NativeResponseCodec.decode(assembled.body()));
+                    if (!events.offer(event)) {
+                        NativeProtocolException overflow = eventBufferOverflow();
+                        terminate(overflow);
+                        return;
+                    }
                     continue;
                 }
                 PendingRequest request = pending.remove(assembled.identity().requestId());
@@ -217,37 +343,28 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
                     continue;
                 }
                 if (!request.identity().equals(assembled.identity())) {
-                    NativeProtocolException mismatch =
-                            new NativeProtocolException(
-                                    "native response identity mismatch: expected "
-                                            + request.identity()
-                                            + ", got "
-                                            + assembled.identity());
+                    NativeProtocolException mismatch = identityMismatch(request, assembled);
                     request.future().completeExceptionally(mismatch);
                     terminate(mismatch);
                     return;
                 }
-                NegotiatedCapabilities capabilities = negotiatedCapabilities;
-                if (capabilities != null
-                        && capabilities.compactResponseCodecs().containsKey(
-                                assembled.identity().opcode())) {
-                    NativeProtocolException unsupported =
-                            new NativeProtocolException(
-                                    "server selected compact response codec "
-                                            + capabilities
-                                                    .compactResponseCodecs()
-                                                    .get(assembled.identity().opcode())
-                                            + " for unsupported opcode 0x"
-                                            + Integer.toHexString(assembled.identity().opcode()));
-                    request.future().completeExceptionally(unsupported);
-                    terminate(unsupported);
-                    return;
+                if ((assembled.flags() & NativeProtocol.FLAG_CUSTOM_PAYLOAD) != 0) {
+                    String codec =
+                            negotiatedCapabilities
+                                    .get()
+                                    .compactResponseCodecs()
+                                    .get(assembled.identity().opcode());
+                    if (codec == null) {
+                        NativeProtocolException unsupported = unsupportedCustomPayload(assembled);
+                        request.future().completeExceptionally(unsupported);
+                        terminate(unsupported);
+                        return;
+                    }
+                    request.future()
+                            .complete(NativeCompactResponseCodec.decode(codec, assembled.body()));
+                    continue;
                 }
                 request.future().complete(NativeResponseCodec.decode(assembled.body()));
-            }
-        } catch (EOFException error) {
-            if (!closed.get()) {
-                terminate(uncertainOutcome(error));
             }
         } catch (IOException error) {
             if (!closed.get()) {
@@ -260,11 +377,16 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
         }
     }
 
+    private static NativeProtocolException eventBufferOverflow() {
+        return new NativeProtocolException(
+                "native event buffer exceeded " + MAX_BUFFERED_EVENTS + " events");
+    }
+
     private void validateUnauthenticatedSize(int bodyBytes) {
-        NegotiatedCapabilities capabilities = negotiatedCapabilities;
+        NegotiatedCapabilities capabilities = negotiatedCapabilities.get();
         if (capabilities != null
                 && capabilities.authRequired()
-                && !authenticated
+                && !authenticated.get()
                 && bodyBytes > NativeProtocol.UNAUTHENTICATED_MAX_FRAME_BYTES) {
             throw new NativeProtocolException(
                     "authenticate before submitting requests larger than the unauthenticated 64 KiB limit");
@@ -286,6 +408,32 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
                         request.future().completeExceptionally(failure);
                     }
                 });
+        eventFailure.compareAndSet(null, failure);
+        if (!events.offer(CLOSED_EVENT)) {
+            events.clear();
+            if (!events.offer(CLOSED_EVENT)) {
+                eventFailure.compareAndSet(
+                        null,
+                        new NativeProtocolException(
+                                "native event stream closed without a terminal marker"));
+            }
+        }
+    }
+
+    private static NativeProtocolException identityMismatch(
+            PendingRequest request, NativeResponseAssembler.Assembled assembled) {
+        return new NativeProtocolException(
+                "native response identity mismatch: expected "
+                        + request.identity()
+                        + ", got "
+                        + assembled.identity());
+    }
+
+    private static NativeProtocolException unsupportedCustomPayload(
+            NativeResponseAssembler.Assembled assembled) {
+        return new NativeProtocolException(
+                "server sent an unnegotiated custom response payload for opcode 0x"
+                        + Integer.toHexString(assembled.identity().opcode()));
     }
 
     private long nextRequestId() {
@@ -306,7 +454,7 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
             }
             copy.add(value);
         }
-        commandName(copy.getFirst());
+        commandName(copy.get(0));
         return copy;
     }
 
@@ -335,6 +483,10 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
 
     private static long laneFor(List<Object> command) {
         Object route = NativeRouting.routeKey(command);
+        return laneForRoute(route);
+    }
+
+    private static long laneForRoute(Object route) {
         int hash = route instanceof byte[] bytes ? Arrays.hashCode(bytes) : route.hashCode();
         return 1L + Math.floorMod(hash, DATA_LANES);
     }
@@ -347,7 +499,16 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
             Thread.sleep(delayMs);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            throw new NativeProtocolException("interrupted during server-directed retry delay", error);
+            throw new NativeProtocolException(
+                    "interrupted during server-directed retry delay", error);
+        }
+    }
+
+    private static long durationToNanos(Duration duration) {
+        try {
+            return duration.toNanos();
+        } catch (ArithmeticException ignored) {
+            return Long.MAX_VALUE;
         }
     }
 
@@ -374,10 +535,23 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
             raw.close();
             throw new IOException("default TLS context is unavailable", error);
         }
-        SSLSocket tls =
-                (SSLSocket)
-                        context.getSocketFactory()
-                                .createSocket(raw, endpoint.host(), endpoint.port(), true);
+        Socket layered;
+        try {
+            layered =
+                    context.getSocketFactory()
+                            .createSocket(raw, endpoint.host(), endpoint.port(), true);
+        } catch (IOException | RuntimeException error) {
+            try {
+                raw.close();
+            } catch (IOException closeError) {
+                error.addSuppressed(closeError);
+            }
+            throw error;
+        }
+        if (!(layered instanceof SSLSocket tls)) {
+            layered.close();
+            throw new IOException("TLS socket factory did not create an SSLSocket");
+        }
         SSLParameters parameters = tls.getSSLParameters();
         parameters.setEndpointIdentificationAlgorithm("HTTPS");
         tls.setSSLParameters(parameters);
@@ -388,5 +562,6 @@ public final class NativeExecutor implements CommandExecutor, AutoCloseable {
     }
 
     private record PendingRequest(
-            NativeFrame.Identity identity, CompletableFuture<NativeResponseCodec.Response> future) {}
+            NativeFrame.Identity identity,
+            CompletableFuture<NativeResponseCodec.Response> future) {}
 }

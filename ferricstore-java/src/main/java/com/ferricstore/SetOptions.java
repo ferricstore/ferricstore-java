@@ -13,7 +13,11 @@ public record SetOptions(
         if (nx && xx) {
             throw new IllegalArgumentException("SET NX and XX options are mutually exclusive");
         }
-        int expiryModes = present(exSeconds) + present(pxMilliseconds) + present(exatSeconds) + present(pxatMillis);
+        int expiryModes =
+                present(exSeconds)
+                        + present(pxMilliseconds)
+                        + present(exatSeconds)
+                        + present(pxatMillis);
         if (expiryModes > 1) {
             throw new IllegalArgumentException("SET accepts only one expiration option");
         }
@@ -83,14 +87,7 @@ public record SetOptions(
 
         public SetOptions build() {
             return new SetOptions(
-                    exSeconds,
-                    pxMilliseconds,
-                    exatSeconds,
-                    pxatMillis,
-                    nx,
-                    xx,
-                    get,
-                    keepTtl);
+                    exSeconds, pxMilliseconds, exatSeconds, pxatMillis, nx, xx, get, keepTtl);
         }
     }
 

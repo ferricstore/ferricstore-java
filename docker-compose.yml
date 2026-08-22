@@ -1,8 +1,8 @@
 services:
   ferricstore:
-    image: ghcr.io/ferricstore/ferricstore:0.4.1
+    image: quay.io/ferricstore/ferricstore:0.11.8
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${FERRICSTORE_PORT:-6388}:6388"
     environment:
       FERRICSTORE_PROTECTED_MODE: "false"
     volumes:

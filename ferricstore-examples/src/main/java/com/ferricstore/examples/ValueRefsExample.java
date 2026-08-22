@@ -16,15 +16,19 @@ public final class ValueRefsExample {
     private ValueRefsExample() {}
 
     public static void main(String[] args) {
-        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "redis://127.0.0.1:6379/0");
+        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
         try (FerricStoreClient client = FerricStoreClient.connect(url, new JsonCodec())) {
-            Object rawRef =
+            Map<String, Object> storedValue =
                     client.valuePut(
                             Map.of("plan", "enterprise", "userId", "user-1"),
                             "profile",
                             null,
                             null,
                             3_600_000L);
+            Object rawRef = storedValue.get("ref");
+            if (rawRef == null) {
+                throw new IllegalStateException("FLOW.VALUE.PUT response did not include ref");
+            }
             String profileRef =
                     rawRef instanceof byte[] bytes
                             ? new String(bytes, StandardCharsets.UTF_8)

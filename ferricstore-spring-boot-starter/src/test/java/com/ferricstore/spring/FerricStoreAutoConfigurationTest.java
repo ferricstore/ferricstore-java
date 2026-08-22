@@ -3,10 +3,10 @@ package com.ferricstore.spring;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ferricstore.Codec;
+import com.ferricstore.CommandExecutor;
 import com.ferricstore.FerricStoreClient;
 import com.ferricstore.JsonCodec;
 import com.ferricstore.QueueClient;
-import com.ferricstore.CommandExecutor;
 import com.ferricstore.WorkflowClient;
 import com.ferricstore.spring.statemachine.FerricFlowStateMachine;
 import org.junit.jupiter.api.Test;
@@ -45,6 +45,29 @@ final class FerricStoreAutoConfigurationTest {
                         context ->
                                 assertThat(context.getBean(Codec.class))
                                         .isInstanceOf(JsonCodec.class));
+    }
+
+    @Test
+    void defaultsToTheFerricStoreNativeEndpoint() {
+        assertThat(new FerricStoreProperties().getUrl()).isEqualTo("ferric://127.0.0.1:6388");
+    }
+
+    @Test
+    void bindsHttpAuthenticationWithoutMakingSpringRequiredByTheCore() {
+        runner.withPropertyValues(
+                        "ferricstore.url=https://gateway.example",
+                        "ferricstore.http.username=lambda",
+                        "ferricstore.http.password=secret",
+                        "ferricstore.http.max-concurrent-requests=32")
+                .run(
+                        context -> {
+                            FerricStoreProperties properties =
+                                    context.getBean(FerricStoreProperties.class);
+                            assertThat(properties.getHttp().getUsername()).isEqualTo("lambda");
+                            assertThat(properties.getHttp().getPassword()).isEqualTo("secret");
+                            assertThat(properties.getHttp().getMaxConcurrentRequests())
+                                    .isEqualTo(32);
+                        });
     }
 
     @Test

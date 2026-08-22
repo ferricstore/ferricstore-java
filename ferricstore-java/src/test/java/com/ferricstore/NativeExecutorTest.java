@@ -17,7 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -26,8 +25,8 @@ import org.junit.jupiter.api.Test;
 final class NativeExecutorTest {
     @Test
     void negotiatesAuthenticatesBeforeDataAndReassemblesChunkedResponses() throws Exception {
-        try (ServerSocket server = new ServerSocket(0);
-                ExecutorService tasks = Executors.newSingleThreadExecutor()) {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
             Future<Void> served =
                     tasks.submit(
                             () -> {
@@ -35,10 +34,18 @@ final class NativeExecutorTest {
                                     NativeFrame hello = readRequest(socket);
                                     assertEquals(
                                             new NativeFrame.Identity(
-                                                    0, NativeProtocol.OP_HELLO, hello.identity().requestId()),
+                                                    0,
+                                                    NativeProtocol.OP_HELLO,
+                                                    hello.identity().requestId()),
                                             hello.identity());
-                                    assertEquals("none", text(map(hello.body()).get("compression")));
-                                    writeResponse(socket, hello.identity(), 0, NativeProtocol.STATUS_OK, hello(true, 4096));
+                                    assertEquals(
+                                            "none", text(map(hello.body()).get("compression")));
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(true, 4096));
 
                                     NativeFrame auth = readRequest(socket);
                                     assertEquals(NativeProtocol.OP_AUTH, auth.identity().opcode());
@@ -46,16 +53,25 @@ final class NativeExecutorTest {
                                     Map<String, Object> credentials = map(auth.body());
                                     assertEquals("sdk-user", text(credentials.get("username")));
                                     assertEquals("s:ecret", text(credentials.get("password")));
-                                    writeResponse(socket, auth.identity(), 0, NativeProtocol.STATUS_OK, "OK");
+                                    writeResponse(
+                                            socket,
+                                            auth.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            "OK");
 
                                     NativeFrame command = readRequest(socket);
-                                    assertEquals(NativeProtocol.OP_COMMAND_EXEC, command.identity().opcode());
+                                    assertEquals(
+                                            NativeProtocol.OP_COMMAND_EXEC,
+                                            command.identity().opcode());
                                     assertTrue(command.identity().laneId() > 0);
                                     Map<String, Object> payload = map(command.body());
                                     assertEquals("GET", text(payload.get("command")));
-                                    assertEquals("key", text(list(payload.get("args")).getFirst()));
+                                    assertEquals("key", text(list(payload.get("args")).get(0)));
 
-                                    byte[] body = responseBody(NativeProtocol.STATUS_OK, new byte[] {1, 2, 3});
+                                    byte[] body =
+                                            responseBody(
+                                                    NativeProtocol.STATUS_OK, new byte[] {1, 2, 3});
                                     int split = 3;
                                     writeRawResponse(
                                             socket,
@@ -74,7 +90,10 @@ final class NativeExecutorTest {
             String password = URLEncoder.encode("s:ecret", StandardCharsets.UTF_8);
             try (NativeExecutor executor =
                     NativeExecutor.connect(
-                            "ferric://sdk-user:" + password + "@127.0.0.1:" + server.getLocalPort())) {
+                            "ferric://sdk-user:"
+                                    + password
+                                    + "@127.0.0.1:"
+                                    + server.getLocalPort())) {
                 assertArrayEquals(
                         new byte[] {1, 2, 3}, (byte[]) executor.execute(List.of("GET", "key")));
                 assertEquals(4096, executor.negotiatedCapabilities().maxResponseBytes());
@@ -83,13 +102,129 @@ final class NativeExecutorTest {
                         executor.negotiatedCapabilities().compactResponseCodecs().get(0x0104));
             }
             served.get();
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void sendsFlowQueriesThroughTheDedicatedTypedOpcode() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+
+                                    NativeFrame query = readRequest(socket);
+                                    assertEquals(
+                                            NativeProtocol.OP_FLOW_QUERY,
+                                            query.identity().opcode());
+                                    assertTrue(query.identity().laneId() > 0);
+                                    Map<String, Object> payload = map(query.body());
+                                    assertEquals("FQL1", text(payload.get("version")));
+                                    assertEquals(
+                                            "FROM runs WHERE partition_key = @partition RETURN COUNT",
+                                            text(payload.get("query")));
+                                    Map<String, Object> params = objectMap(payload.get("params"));
+                                    assertEquals("tenant-a", text(params.get("partition")));
+                                    assertEquals(7L, params.get("minimum"));
+                                    writeResponse(
+                                            socket,
+                                            query.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            Map.of(
+                                                    "version",
+                                                    "ferric.flow.query.result/v1",
+                                                    "result",
+                                                    Map.of("kind", "count", "value", 1L)));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                Object response =
+                        executor.flowQuery(
+                                "FROM runs WHERE partition_key = @partition RETURN COUNT",
+                                Map.of("partition", "tenant-a", "minimum", 7L));
+                assertEquals(1L, objectMap(objectMap(response).get("result")).get("value"));
+            }
+            served.get();
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void sendsStructuredOnlyFlowCommandsThroughTheirCataloguedOpcode() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+
+                                    NativeFrame mget = readRequest(socket);
+                                    assertEquals(0x020C, mget.identity().opcode());
+                                    Map<String, Object> payload = map(mget.body());
+                                    assertEquals(
+                                            List.of("ref-a", "ref-b", "ref-missing"),
+                                            list(payload.get("refs")).stream()
+                                                    .map(NativeExecutorTest::text)
+                                                    .toList());
+                                    assertEquals(1024L, payload.get("max_bytes"));
+                                    writeRawResponse(
+                                            socket,
+                                            mget.identity(),
+                                            NativeProtocol.FLAG_CUSTOM_PAYLOAD,
+                                            compactMgetBody("one", null, "two"));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                assertEquals(
+                        java.util.Arrays.asList("one", null, "two"),
+                        list(
+                                        executor.execute(
+                                                List.of(
+                                                        "FLOW.VALUE.MGET",
+                                                        "ref-a",
+                                                        "ref-b",
+                                                        "ref-missing",
+                                                        "MAX_BYTES",
+                                                        1024L)))
+                                .stream()
+                                .map(value -> value == null ? null : text(value))
+                                .toList());
+            }
+            served.get();
+        } finally {
+            tasks.shutdownNow();
         }
     }
 
     @Test
     void rejectsMissing08HelloCapabilitiesWithoutSendingADataCommand() throws Exception {
-        try (ServerSocket server = new ServerSocket(0);
-                ExecutorService tasks = Executors.newSingleThreadExecutor()) {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
             Future<Void> served =
                     tasks.submit(
                             () -> {
@@ -101,14 +236,14 @@ final class NativeExecutorTest {
                                             0,
                                             NativeProtocol.STATUS_OK,
                                             Map.of(
-                                                    "protocol", "ferricstore-native",
-                                                    "version", 1L,
+                                                    "protocol",
+                                                    "ferricstore-native",
+                                                    "version",
+                                                    1L,
                                                     "capabilities",
-                                                            Map.of(
-                                                                    "limits",
-                                                                    Map.of(
-                                                                            "max_response_bytes",
-                                                                            4096L))));
+                                                    Map.of(
+                                                            "limits",
+                                                            Map.of("max_response_bytes", 4096L))));
                                 }
                                 return null;
                             });
@@ -121,19 +256,26 @@ final class NativeExecutorTest {
                                             "ferric://127.0.0.1:" + server.getLocalPort()));
             assertTrue(error.getMessage().contains("minimum 0.8.0 HELLO contract"));
             served.get();
+        } finally {
+            tasks.shutdownNow();
         }
     }
 
     @Test
     void appliesNegotiatedResponseLimitBeforeAllocatingTheNextFrame() throws Exception {
-        try (ServerSocket server = new ServerSocket(0);
-                ExecutorService tasks = Executors.newSingleThreadExecutor()) {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
             Future<Void> served =
                     tasks.submit(
                             () -> {
                                 try (Socket socket = server.accept()) {
                                     NativeFrame hello = readRequest(socket);
-                                    writeResponse(socket, hello.identity(), 0, NativeProtocol.STATUS_OK, hello(false, 32));
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 32));
                                     NativeFrame command = readRequest(socket);
                                     writeResponseHeader(socket, command.identity(), 0, 33);
                                 }
@@ -146,23 +288,29 @@ final class NativeExecutorTest {
                         assertThrows(
                                 NativeProtocolException.class,
                                 () -> executor.execute(List.of("GET", "key")));
-                assertTrue(
-                        error.getMessage().contains("max_response_bytes"), error::getMessage);
+                assertTrue(error.getMessage().contains("max_response_bytes"), error::getMessage);
             }
             served.get();
+        } finally {
+            tasks.shutdownNow();
         }
     }
 
     @Test
     void retriesOnlyWhenTheServerMarksBusyOrRerouteRetryableAndSafe() throws Exception {
-        try (ServerSocket server = new ServerSocket(0);
-                ExecutorService tasks = Executors.newSingleThreadExecutor()) {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
             Future<Void> served =
                     tasks.submit(
                             () -> {
                                 try (Socket socket = server.accept()) {
                                     NativeFrame hello = readRequest(socket);
-                                    writeResponse(socket, hello.identity(), 0, NativeProtocol.STATUS_OK, hello(false, 4096));
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
                                     NativeFrame first = readRequest(socket);
                                     writeResponse(
                                             socket,
@@ -170,10 +318,14 @@ final class NativeExecutorTest {
                                             0,
                                             NativeProtocol.STATUS_BUSY,
                                             Map.of(
-                                                    "message", "busy",
-                                                    "retryable", true,
-                                                    "safe_to_retry", true,
-                                                    "retry_after_ms", 0L));
+                                                    "message",
+                                                    "busy",
+                                                    "retryable",
+                                                    true,
+                                                    "safe_to_retry",
+                                                    true,
+                                                    "retry_after_ms",
+                                                    0L));
                                     NativeFrame retried = readRequest(socket);
                                     Map<String, Object> firstPayload = map(first.body());
                                     Map<String, Object> retriedPayload = map(retried.body());
@@ -181,9 +333,14 @@ final class NativeExecutorTest {
                                             text(firstPayload.get("command")),
                                             text(retriedPayload.get("command")));
                                     assertEquals(
-                                            text(list(firstPayload.get("args")).getFirst()),
-                                            text(list(retriedPayload.get("args")).getFirst()));
-                                    writeResponse(socket, retried.identity(), 0, NativeProtocol.STATUS_OK, "OK");
+                                            text(list(firstPayload.get("args")).get(0)),
+                                            text(list(retriedPayload.get("args")).get(0)));
+                                    writeResponse(
+                                            socket,
+                                            retried.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            "OK");
 
                                     NativeFrame unsafe = readRequest(socket);
                                     writeResponse(
@@ -192,10 +349,14 @@ final class NativeExecutorTest {
                                             0,
                                             NativeProtocol.STATUS_REROUTE,
                                             Map.of(
-                                                    "message", "unsafe",
-                                                    "retryable", true,
-                                                    "safe_to_retry", false,
-                                                    "retry_after_ms", 0L));
+                                                    "message",
+                                                    "unsafe",
+                                                    "retryable",
+                                                    true,
+                                                    "safe_to_retry",
+                                                    false,
+                                                    "retry_after_ms",
+                                                    0L));
                                 }
                                 return null;
                             });
@@ -211,19 +372,26 @@ final class NativeExecutorTest {
                 assertEquals(false, error.safeToRetry());
             }
             served.get();
+        } finally {
+            tasks.shutdownNow();
         }
     }
 
     @Test
     void neverReplaysACommandAfterTheConnectionDropsWithAnUnknownOutcome() throws Exception {
-        try (ServerSocket server = new ServerSocket(0);
-                ExecutorService tasks = Executors.newSingleThreadExecutor()) {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
             Future<Integer> served =
                     tasks.submit(
                             () -> {
                                 try (Socket socket = server.accept()) {
                                     NativeFrame hello = readRequest(socket);
-                                    writeResponse(socket, hello.identity(), 0, NativeProtocol.STATUS_OK, hello(false, 4096));
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
                                     readRequest(socket);
                                     return 1;
                                 }
@@ -238,6 +406,8 @@ final class NativeExecutorTest {
                 assertTrue(error.getMessage().contains("outcome is unknown"));
             }
             assertEquals(1, served.get());
+        } finally {
+            tasks.shutdownNow();
         }
     }
 
@@ -252,16 +422,19 @@ final class NativeExecutorTest {
 
     private static Map<String, Object> hello(boolean authRequired, int maxResponseBytes) {
         Map<String, Object> codecs = new LinkedHashMap<>();
-        codecs.put("kv_mget_v1", List.of(0x0104L));
-        codecs.put("flow_value_mget_v2", List.of(0x020CL));
+        codecs.put("flow_query_result_v1", List.of(0x0100L));
+        codecs.put("kv_mget_v1", List.of(0x0104L, 0x020CL));
         return Map.of(
-                "protocol", "ferricstore-native",
-                "version", 1L,
-                "auth_required", authRequired,
+                "protocol",
+                "ferricstore-native",
+                "version",
+                1L,
+                "auth_required",
+                authRequired,
                 "capabilities",
-                        Map.of(
-                                "limits", Map.of("max_response_bytes", (long) maxResponseBytes),
-                                "response_codecs", Map.of("compact_response_opcodes", codecs)));
+                Map.of(
+                        "limits", Map.of("max_response_bytes", (long) maxResponseBytes),
+                        "response_codecs", Map.of("compact_response_opcodes", codecs)));
     }
 
     private static NativeFrame readRequest(Socket socket) throws IOException {
@@ -281,17 +454,14 @@ final class NativeExecutorTest {
     }
 
     private static void writeResponse(
-            Socket socket,
-            NativeFrame.Identity identity,
-            int flags,
-            int status,
-            Object value)
+            Socket socket, NativeFrame.Identity identity, int flags, int status, Object value)
             throws IOException {
         writeRawResponse(socket, identity, flags, responseBody(status, value));
     }
 
     private static void writeRawResponse(
-            Socket socket, NativeFrame.Identity identity, int flags, byte[] body) throws IOException {
+            Socket socket, NativeFrame.Identity identity, int flags, byte[] body)
+            throws IOException {
         writeResponseHeader(socket, identity, flags, body.length);
         socket.getOutputStream().write(body);
         socket.getOutputStream().flush();
@@ -319,9 +489,33 @@ final class NativeExecutorTest {
         return bytes.toByteArray();
     }
 
+    private static byte[] compactMgetBody(String... values) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream output = new DataOutputStream(bytes);
+        output.writeShort(NativeProtocol.STATUS_OK);
+        output.writeByte(0x83);
+        output.writeInt(values.length);
+        for (String value : values) {
+            if (value == null) {
+                output.writeByte(0);
+            } else {
+                byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+                output.writeByte(1);
+                output.writeInt(encoded.length);
+                output.write(encoded);
+            }
+        }
+        return bytes.toByteArray();
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> map(byte[] body) {
         return (Map<String, Object>) NativeValueCodec.decode(body);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> objectMap(Object value) {
+        return (Map<String, Object>) value;
     }
 
     @SuppressWarnings("unchecked")

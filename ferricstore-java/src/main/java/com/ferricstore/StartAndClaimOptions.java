@@ -18,6 +18,8 @@ public record StartAndClaimOptions(
         Long priority,
         Long retentionTtlMs,
         MaxActiveMs maxActiveMs,
+        Map<String, ?> attributes,
+        Map<String, ?> stateMeta,
         Map<String, ?> values,
         Map<String, String> valueRefs) {
     public StartAndClaimOptions {
@@ -28,6 +30,8 @@ public record StartAndClaimOptions(
         if (leaseMs <= 0) {
             throw new IllegalArgumentException("leaseMs must be positive");
         }
+        attributes = ImmutableCopies.map(attributes);
+        stateMeta = ImmutableCopies.map(stateMeta);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
     }
@@ -51,6 +55,8 @@ public record StartAndClaimOptions(
         private Long priority;
         private Long retentionTtlMs;
         private MaxActiveMs maxActiveMs;
+        private final Map<String, Object> attributes = new LinkedHashMap<>();
+        private final Map<String, Object> stateMeta = new LinkedHashMap<>();
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
 
@@ -116,6 +122,16 @@ public record StartAndClaimOptions(
             return this;
         }
 
+        public Builder attribute(String name, Object value) {
+            attributes.put(name, value);
+            return this;
+        }
+
+        public Builder stateMeta(String state, Object value) {
+            stateMeta.put(state, value);
+            return this;
+        }
+
         public Builder value(String name, Object value) {
             values.put(name, value);
             return this;
@@ -142,6 +158,8 @@ public record StartAndClaimOptions(
                     priority,
                     retentionTtlMs,
                     maxActiveMs,
+                    attributes,
+                    stateMeta,
                     values,
                     valueRefs);
         }

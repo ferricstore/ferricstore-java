@@ -18,10 +18,14 @@ public record CreateOptions(
         Boolean idempotent,
         Long retentionTtlMs,
         MaxActiveMs maxActiveMs,
+        Map<String, ?> attributes,
+        Map<String, ?> stateMeta,
         Map<String, ?> values,
         Map<String, String> valueRefs,
         boolean returnRecord) {
     public CreateOptions {
+        attributes = ImmutableCopies.map(attributes);
+        stateMeta = ImmutableCopies.map(stateMeta);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
     }
@@ -45,6 +49,8 @@ public record CreateOptions(
         private Boolean idempotent;
         private Long retentionTtlMs;
         private MaxActiveMs maxActiveMs;
+        private final Map<String, Object> attributes = new LinkedHashMap<>();
+        private final Map<String, Object> stateMeta = new LinkedHashMap<>();
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
         private boolean returnRecord;
@@ -119,6 +125,26 @@ public record CreateOptions(
             return this;
         }
 
+        public Builder attribute(String name, Object value) {
+            this.attributes.put(name, value);
+            return this;
+        }
+
+        public Builder attributes(Map<String, ?> values) {
+            this.attributes.putAll(values);
+            return this;
+        }
+
+        public Builder stateMeta(String state, Object value) {
+            this.stateMeta.put(state, value);
+            return this;
+        }
+
+        public Builder stateMeta(Map<String, ?> values) {
+            this.stateMeta.putAll(values);
+            return this;
+        }
+
         public Builder value(String name, Object value) {
             this.values.put(name, value);
             return this;
@@ -160,6 +186,8 @@ public record CreateOptions(
                     idempotent,
                     retentionTtlMs,
                     maxActiveMs,
+                    Map.copyOf(attributes),
+                    Map.copyOf(stateMeta),
                     Map.copyOf(values),
                     Map.copyOf(valueRefs),
                     returnRecord);

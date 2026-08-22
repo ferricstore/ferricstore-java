@@ -28,8 +28,9 @@ record NativeEndpoint(String host, int port, boolean tls, String username, Strin
         } catch (URISyntaxException error) {
             throw new IllegalArgumentException("invalid FerricStore URI", error);
         }
-        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
-        if (!scheme.equals("ferric") && !scheme.equals("ferrics")) {
+        String scheme =
+                uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
+        if (!"ferric".equals(scheme) && !"ferrics".equals(scheme)) {
             throw new IllegalArgumentException(
                     "FerricStore native URLs must use ferric:// or ferrics://");
         }
@@ -37,7 +38,7 @@ record NativeEndpoint(String host, int port, boolean tls, String username, Strin
             throw new IllegalArgumentException("FerricStore URI requires a valid host");
         }
         String path = uri.getRawPath();
-        if ((path != null && !path.isEmpty() && !path.equals("/"))
+        if ((path != null && !path.isEmpty() && !"/".equals(path))
                 || uri.getRawQuery() != null
                 || uri.getRawFragment() != null) {
             throw new IllegalArgumentException(
@@ -59,7 +60,7 @@ record NativeEndpoint(String host, int port, boolean tls, String username, Strin
         return new NativeEndpoint(
                 uri.getHost(),
                 uri.getPort() < 0 ? DEFAULT_PORT : uri.getPort(),
-                scheme.equals("ferrics"),
+                "ferrics".equals(scheme),
                 username,
                 password);
     }
@@ -68,7 +69,8 @@ record NativeEndpoint(String host, int port, boolean tls, String username, Strin
         try {
             return URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8);
         } catch (IllegalArgumentException error) {
-            throw new IllegalArgumentException("invalid percent encoding in FerricStore URI", error);
+            throw new IllegalArgumentException(
+                    "invalid percent encoding in FerricStore URI", error);
         }
     }
 }

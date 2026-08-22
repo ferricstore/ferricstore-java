@@ -16,6 +16,7 @@ public record TransitionOptions(
         Long priority,
         Map<String, ?> values,
         Map<String, String> valueRefs,
+        FlowMutationFields mutationFields,
         boolean returnRecord) {
     public TransitionOptions {
         FlowValidation.requireText(id, "flow id");
@@ -25,6 +26,7 @@ public record TransitionOptions(
         FlowValidation.requireFencingToken(fencingToken);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
+        mutationFields = mutationFields == null ? FlowMutationFields.empty() : mutationFields;
     }
 
     public static Builder builder(
@@ -45,6 +47,7 @@ public record TransitionOptions(
         private Long priority;
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
+        private FlowMutationFields mutationFields = FlowMutationFields.empty();
         private boolean returnRecord;
 
         private Builder(
@@ -91,6 +94,11 @@ public record TransitionOptions(
             return this;
         }
 
+        public Builder mutationFields(FlowMutationFields value) {
+            this.mutationFields = value;
+            return this;
+        }
+
         public Builder returnRecord(boolean value) {
             this.returnRecord = value;
             return this;
@@ -110,6 +118,7 @@ public record TransitionOptions(
                     priority,
                     Map.copyOf(values),
                     Map.copyOf(valueRefs),
+                    mutationFields,
                     returnRecord);
         }
     }

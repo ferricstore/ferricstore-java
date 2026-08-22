@@ -2,7 +2,6 @@ package com.ferricstore;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -14,16 +13,12 @@ final class NativeFrameTest {
     @Test
     void keepsTheNativeWireAtProtocolV1() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        NativeFrame.writeRequest(output, 7, NativeProtocol.OP_COMMAND_EXEC, 9, 0, new byte[] {1, 2});
+        NativeFrame.writeRequest(
+                output, 7, NativeProtocol.OP_COMMAND_EXEC, 9, 0, new byte[] {1, 2});
 
         assertArrayEquals(
                 new byte[] {
-                    'F', 'S', 'N', 'P',
-                    1, 0,
-                    0, 0, 0, 7,
-                    1, 0,
-                    0, 0, 0, 0, 0, 0, 0, 9,
-                    0, 0, 0, 2,
+                    'F', 'S', 'N', 'P', 1, 0, 0, 0, 0, 7, 1, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 2,
                     1, 2
                 },
                 output.toByteArray());
@@ -31,15 +26,9 @@ final class NativeFrameTest {
 
     @Test
     void rejectsAFrameFromItsLengthHeaderBeforeReadingOrAllocatingItsBody() {
-        byte[] header =
-                new byte[] {
-                    'F', 'S', 'N', 'P',
-                    (byte) 0x81, 0,
-                    0, 0, 0, 1,
-                    1, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1,
-                    0, 1, 0, 0
-                };
+        byte[] header = {
+            'F', 'S', 'N', 'P', (byte) 0x81, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0
+        };
 
         NativeProtocolException error =
                 assertThrows(
@@ -61,16 +50,14 @@ final class NativeFrameTest {
 
         assertEquals(first, firstDone.identity());
         assertArrayEquals(new byte[] {1, 2, 4, 5}, firstDone.body());
-        assertFalse((firstDone.flags() & NativeProtocol.FLAG_MORE_CHUNKS) != 0);
+        assertEquals(0, firstDone.flags() & NativeProtocol.FLAG_MORE_CHUNKS);
         assertEquals(second, secondDone.identity());
         assertArrayEquals(new byte[] {3, 6}, secondDone.body());
 
         NativeFrame.Identity oversized = new NativeFrame.Identity(3, 0x0104, 13);
         assertNull(
                 assembler.add(
-                        oversized,
-                        NativeProtocol.FLAG_MORE_CHUNKS,
-                        new byte[] {1, 2, 3, 4, 5}));
+                        oversized, NativeProtocol.FLAG_MORE_CHUNKS, new byte[] {1, 2, 3, 4, 5}));
         assertThrows(
                 NativeProtocolException.class,
                 () -> assembler.add(oversized, 0, new byte[] {6, 7, 8, 9}));

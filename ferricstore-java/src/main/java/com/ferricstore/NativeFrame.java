@@ -2,7 +2,6 @@ package com.ferricstore;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -25,12 +24,7 @@ record NativeFrame(Identity identity, int flags, byte[] body) {
     }
 
     static void writeRequest(
-            OutputStream output,
-            long laneId,
-            int opcode,
-            long requestId,
-            int flags,
-            byte[] body)
+            OutputStream output, long laneId, int opcode, long requestId, int flags, byte[] body)
             throws IOException {
         if (requestId == 0) {
             throw new IllegalArgumentException("native requests require a non-zero requestId");
@@ -55,11 +49,7 @@ record NativeFrame(Identity identity, int flags, byte[] body) {
             throws IOException {
         DataInputStream data = new DataInputStream(input);
         byte[] magic = new byte[NativeProtocol.MAGIC.length];
-        try {
-            data.readFully(magic);
-        } catch (EOFException error) {
-            throw error;
-        }
+        data.readFully(magic);
         if (!Arrays.equals(NativeProtocol.MAGIC, magic)) {
             throw new NativeProtocolException("invalid native protocol magic");
         }
@@ -78,8 +68,7 @@ record NativeFrame(Identity identity, int flags, byte[] body) {
             throw new IllegalArgumentException("maxFrameBytes must be non-negative");
         }
         if (bodyLength > currentLimit || bodyLength > Integer.MAX_VALUE) {
-            throw new NativeProtocolException(
-                    "native response frame exceeds max_response_bytes");
+            throw new NativeProtocolException("native response frame exceeds max_response_bytes");
         }
         byte[] body = new byte[(int) bodyLength];
         data.readFully(body);

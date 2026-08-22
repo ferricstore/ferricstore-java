@@ -13,11 +13,12 @@ return Outcomes.fail(Map.of("reason", "bad input"));
 
 ## What The SDK Does
 
-- Builds typed `FLOW.*` commands over Redis RESP.
+- Builds typed `FLOW.*` commands over FerricStore's multiplexed native TCP/TLS protocol.
 - Provides `FerricStoreClient` for direct command control.
 - Provides `QueueClient` for durable queue-shaped workloads.
 - Provides `WorkflowClient` for explicit state-machine workflows.
 - Provides store helpers for KV, hashes, lists, sets, sorted sets, streams, JSON, and probabilistic structures.
+- Runs ordinary commands and pipelines over either native TCP/TLS or HTTP/HTTPS without changing the command API.
 - Provides a Spring Boot starter with conditional beans for `Codec`, `FerricStoreClient`, `QueueClient`, and `WorkflowClient`.
 - Provides an optional Spring Statemachine adapter for validating state graphs while keeping FerricStore as the only workflow persistence layer.
 
@@ -63,8 +64,22 @@ The SDK keeps the hot path thin:
 - no replay sandbox;
 - no method proxy requirement;
 - no generated wrappers around handlers;
-- direct RESP commands through Jedis;
+- one multiplexed native connection with a dedicated response reader;
+- reusable queue/workflow sessions that retain an SDK-owned executor across polls;
+- caller-supplied executors are borrowed and never closed by the SDK;
 - batch APIs such as `createMany`, `completeMany`, `transitionMany`, `retryMany`, `failMany`, and `cancelMany`;
 - value refs let workers hydrate only the named values they need.
 
 The storage throughput story belongs mostly to FerricStore itself: FerricStore owns the storage path and FerricFlow state is stored inside FerricStore, not through a separate workflow database client from this SDK.
+
+## Transport Boundaries
+
+HTTP/HTTPS uses persistent HTTP connections and sends a complete pipeline in one request. Ordinary data, administration, and FerricFlow commands have the same Java API on both transports. Commands whose correctness depends on a dedicated native server-side caller or connection are rejected locally over HTTP and remain available through native TCP/TLS. This includes blocking list operations, `XREAD`/`XREADGROUP` (classified as session-scoped by the current OSS HTTP gateway even without `BLOCK`), transactions, subscriptions, and `FETCH_OR_COMPUTE*`; the latter binds its ownership token to the native caller that acquired it.
+
+## Java Runtime And Worker Lifecycle
+
+The published artifacts use `--release 17`. Java 17 platform threads are the default. Virtual threads are an explicit Java 21+ option loaded through a small reflective adapter, so Java 17 can load every core class; requesting virtual threads on Java 17 fails immediately and clearly.
+
+`runOnce` is the one-shot API for Lambda-style invocations. `openSession` is the persistent service API: it is synchronous, `AutoCloseable`, accepts only one active poll, and reuses execution resources. The application owns the poll cadence, stop signal, and service lifecycle. This keeps the core usable from plain Java, Spring, Jakarta, Micronaut, Quarkus, or another host without imposing Reactor or a hidden scheduler.
+
+Session close first drains the active poll. A bounded close cancels submitted tasks after its deadline but cannot force arbitrary Java handler code to stop. Durable correctness therefore remains with the server's lease token and fencing token: a handler that outlives its lease cannot validly complete work after another owner receives a newer fence.

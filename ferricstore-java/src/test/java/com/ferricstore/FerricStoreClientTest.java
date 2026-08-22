@@ -14,6 +14,24 @@ import org.junit.jupiter.api.Test;
 
 final class FerricStoreClientTest {
     @Test
+    void transportOptionsMustMatchTheEndpointScheme() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        FerricStoreClient.connect(
+                                "ferric://127.0.0.1:6388",
+                                new RawCodec(),
+                                HttpTransportOptions.defaults()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        FerricStoreClient.connect(
+                                "https://127.0.0.1:8443",
+                                new RawCodec(),
+                                NativeTransportOptions.defaults()));
+    }
+
+    @Test
     void createBuildsCommandDefaults() {
         FakeExecutor executor = new FakeExecutor("OK");
         FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
@@ -178,7 +196,7 @@ final class FerricStoreClientTest {
                         10L),
                 executor.last());
         assertEquals(1, jobs.size());
-        FlowRecord job = jobs.getFirst();
+        FlowRecord job = jobs.get(0);
         assertEquals("flow-1", job.id());
         assertEquals("order", job.type());
         assertEquals("created", job.state());
@@ -337,6 +355,28 @@ final class FerricStoreClientTest {
     }
 
     @Test
+    void rejectsClaimedCompactRowsWithUnknownTrailingFields() {
+        FakeExecutor executor =
+                new FakeExecutor(
+                        List.of(
+                                List.of(
+                                        "flow-1",
+                                        "p1",
+                                        "lease-1",
+                                        9L,
+                                        "created",
+                                        Map.of("tenant", "acme"),
+                                        "unexpected")));
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        assertThrows(
+                FerricStoreException.class,
+                () ->
+                        client.claimJobs(
+                                ClaimDueOptions.builder("order", "worker-1").nowMs(100).build()));
+    }
+
+    @Test
     void reclaimBuildsRunningLeaseCommandShape() {
         FakeExecutor executor =
                 new FakeExecutor(
@@ -377,9 +417,9 @@ final class FerricStoreClientTest {
                         "NOPAYLOAD"),
                 executor.last());
         assertEquals(1, jobs.size());
-        assertEquals("flow-1", jobs.getFirst().id());
-        assertEquals("lease-1", jobs.getFirst().leaseToken());
-        assertEquals(3L, jobs.getFirst().fencingToken());
+        assertEquals("flow-1", jobs.get(0).id());
+        assertEquals("lease-1", jobs.get(0).leaseToken());
+        assertEquals(3L, jobs.get(0).fencingToken());
     }
 
     @Test
@@ -661,7 +701,7 @@ final class FerricStoreClientTest {
         }
 
         private List<Object> last() {
-            return calls.getLast();
+            return calls.get(calls.size() - 1);
         }
     }
 }

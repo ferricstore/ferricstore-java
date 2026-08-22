@@ -13,7 +13,7 @@ final class HashSlot {
         if (keys.size() < 2) {
             return;
         }
-        int expected = of(keys.getFirst());
+        int expected = of(keys.get(0));
         for (int index = 1; index < keys.size(); index++) {
             if (of(keys.get(index)) != expected) {
                 throw new IllegalArgumentException(

@@ -11,12 +11,14 @@ public final class JsonStore {
         this.client = client;
     }
 
+    /** Stores a complete JSON document using FerricStore's supported string command surface. */
     public boolean set(String key, String path, Object value) {
-        return CommandArgs.ok(client.command("JSON.SET", key, path, write(value)));
+        requireRoot(path);
+        return CommandArgs.ok(client.command("SET", key, write(value)));
     }
 
     public <T> T get(String key, Class<T> type) {
-        Object response = client.command("JSON.GET", key, "$");
+        Object response = client.command("GET", key);
         if (response == null) {
             return null;
         }
@@ -28,13 +30,14 @@ public final class JsonStore {
     }
 
     public long del(String key, String path) {
-        return Resp.number(client.command("JSON.DEL", key, path));
+        requireRoot(path);
+        return Resp.number(client.command("DEL", key));
     }
 
     public List<Object> mget(List<String> keys, String path) {
-        List<Object> args = CommandArgs.args("JSON.MGET");
+        requireRoot(path);
+        List<Object> args = CommandArgs.args("MGET");
         args.addAll(keys);
-        args.add(path);
         return Resp.list(client.command(args));
     }
 
@@ -43,6 +46,13 @@ public final class JsonStore {
             return mapper.writeValueAsString(value);
         } catch (Exception e) {
             throw new FerricStoreException("failed to encode JSON command value", e);
+        }
+    }
+
+    private static void requireRoot(String path) {
+        if (!"$".equals(path)) {
+            throw new IllegalArgumentException(
+                    "FerricStore JSON documents support the root '$' path only");
         }
     }
 }

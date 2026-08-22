@@ -102,8 +102,7 @@ final class NativeValueCodec {
             output.writeDouble(((Number) value).doubleValue());
         } else {
             throw new NativeProtocolException(
-                    "unsupported native protocol value type: "
-                            + value.getClass().getSimpleName());
+                    "unsupported native protocol value type: " + value.getClass().getSimpleName());
         }
     }
 
@@ -126,8 +125,9 @@ final class NativeValueCodec {
                 require(input, Double.BYTES);
                 yield input.getDouble();
             }
-            default -> throw new NativeProtocolException(
-                    "native protocol value has unknown tag " + tag);
+            default ->
+                    throw new NativeProtocolException(
+                            "native protocol value has unknown tag " + tag);
         };
     }
 
@@ -146,7 +146,8 @@ final class NativeValueCodec {
         for (int index = 0; index < count; index++) {
             String key = decodeUtf8(readLengthPrefixed(input), "native protocol map keys");
             if (result.containsKey(key)) {
-                throw new NativeProtocolException("duplicate native protocol map key while decoding");
+                throw new NativeProtocolException(
+                        "duplicate native protocol map key while decoding");
             }
             result.put(key, readValue(input, depth + 1, budget));
         }
@@ -213,7 +214,8 @@ final class NativeValueCodec {
         if (key instanceof String text) {
             return utf8(text, "native protocol map keys");
         }
-        throw new NativeProtocolException("native protocol map keys must be strings or byte arrays");
+        throw new NativeProtocolException(
+                "native protocol map keys must be strings or byte arrays");
     }
 
     private static byte[] utf8(String value, String label) {
@@ -247,7 +249,8 @@ final class NativeValueCodec {
 
     private static void checkDepth(int depth) {
         if (depth > MAX_NESTING) {
-            throw new NativeProtocolException("native protocol value nesting exceeds maximum depth");
+            throw new NativeProtocolException(
+                    "native protocol value nesting exceeds maximum depth");
         }
     }
 
@@ -290,13 +293,13 @@ final class NativeValueCodec {
         }
 
         @Override
-        public synchronized void write(int value) {
+        public void write(int value) {
             ensure(1);
             super.write(value);
         }
 
         @Override
-        public synchronized void write(byte[] bytes, int offset, int length) {
+        public void write(byte[] bytes, int offset, int length) {
             ensure(length);
             super.write(bytes, offset, length);
         }

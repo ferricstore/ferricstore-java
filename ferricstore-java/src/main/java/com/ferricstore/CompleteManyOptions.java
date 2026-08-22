@@ -1,6 +1,8 @@
 package com.ferricstore;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public record CompleteManyOptions(
         String partitionKey,
@@ -9,9 +11,16 @@ public record CompleteManyOptions(
         Object payload,
         Long ttlMs,
         long nowMs,
-        Boolean independent) {
+        Boolean independent,
+        Map<String, ?> values,
+        Map<String, String> valueRefs,
+        FlowMutationFields mutationFields,
+        boolean returnOkOnSuccess) {
     public CompleteManyOptions {
         items = ImmutableCopies.list(items);
+        values = ImmutableCopies.map(values);
+        valueRefs = ImmutableCopies.map(valueRefs);
+        mutationFields = mutationFields == null ? FlowMutationFields.empty() : mutationFields;
     }
 
     public static Builder builder(List<ClaimedItem> items) {
@@ -26,6 +35,10 @@ public record CompleteManyOptions(
         private Long ttlMs;
         private long nowMs;
         private Boolean independent;
+        private final Map<String, Object> values = new LinkedHashMap<>();
+        private final Map<String, String> valueRefs = new LinkedHashMap<>();
+        private FlowMutationFields mutationFields = FlowMutationFields.empty();
+        private boolean returnOkOnSuccess;
 
         private Builder(List<ClaimedItem> items) {
             this.items = List.copyOf(items);
@@ -61,9 +74,39 @@ public record CompleteManyOptions(
             return this;
         }
 
+        public Builder value(String name, Object value) {
+            values.put(name, value);
+            return this;
+        }
+
+        public Builder valueRef(String name, String value) {
+            valueRefs.put(name, value);
+            return this;
+        }
+
+        public Builder mutationFields(FlowMutationFields value) {
+            mutationFields = value;
+            return this;
+        }
+
+        public Builder returnOkOnSuccess(boolean value) {
+            returnOkOnSuccess = value;
+            return this;
+        }
+
         public CompleteManyOptions build() {
             return new CompleteManyOptions(
-                    partitionKey, items, result, payload, ttlMs, nowMs, independent);
+                    partitionKey,
+                    items,
+                    result,
+                    payload,
+                    ttlMs,
+                    nowMs,
+                    independent,
+                    values,
+                    valueRefs,
+                    mutationFields,
+                    returnOkOnSuccess);
         }
     }
 }

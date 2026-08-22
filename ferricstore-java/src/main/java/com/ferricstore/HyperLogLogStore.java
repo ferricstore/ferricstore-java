@@ -22,4 +22,14 @@ public final class HyperLogLogStore {
         args.addAll(List.of(keys));
         return Resp.number(client.command(args));
     }
+
+    public boolean pfmerge(String destination, String... sourceKeys) {
+        List<String> all = new java.util.ArrayList<>();
+        all.add(destination);
+        all.addAll(List.of(sourceKeys));
+        HashSlot.requireSame("PFMERGE", all);
+        List<Object> args = CommandArgs.args("PFMERGE", destination);
+        args.addAll(List.of(sourceKeys));
+        return CommandArgs.ok(client.command(args));
+    }
 }

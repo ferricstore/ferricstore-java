@@ -9,7 +9,7 @@ public final class NativeServerException extends FerricStoreException {
     private static final long serialVersionUID = 1L;
 
     private final int status;
-    private final Object raw;
+    private final transient Object raw;
     private final Boolean retryable;
     private final Boolean safeToRetry;
     private final Long retryAfterMs;

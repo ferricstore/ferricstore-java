@@ -5,12 +5,11 @@ import java.util.HashMap;
 import java.util.Map;
 
 final class NativeResponseAssembler {
-    record Assembled(NativeFrame.Identity identity, int flags, byte[] body) {
-    }
-
     private final Map<NativeFrame.Identity, Pending> pending = new HashMap<>();
-    private int maxResponseBytes;
     private final int maxChunks;
+    private int maxResponseBytes;
+
+    record Assembled(NativeFrame.Identity identity, int flags, byte[] body) {}
 
     NativeResponseAssembler(int maxResponseBytes, int maxChunks) {
         if (maxResponseBytes <= 0) {
@@ -23,48 +22,56 @@ final class NativeResponseAssembler {
         this.maxChunks = maxChunks;
     }
 
-    synchronized Assembled add(NativeFrame.Identity identity, int flags, byte[] chunk) {
-        boolean more = (flags & NativeProtocol.FLAG_MORE_CHUNKS) != 0;
-        int logicalFlags = flags & ~NativeProtocol.FLAG_MORE_CHUNKS;
-        Pending current = pending.get(identity);
-        if (current == null && !more) {
-            checkSize(chunk.length);
-            return new Assembled(identity, logicalFlags, chunk);
-        }
-        if (current == null) {
-            current = new Pending(logicalFlags, Math.min(chunk.length, maxResponseBytes));
-            pending.put(identity, current);
-        }
-        try {
-            current.append(chunk, logicalFlags, maxResponseBytes, maxChunks);
-        } catch (RuntimeException error) {
+    Assembled add(NativeFrame.Identity identity, int flags, byte[] chunk) {
+        synchronized (pending) {
+            boolean more = (flags & NativeProtocol.FLAG_MORE_CHUNKS) != 0;
+            int logicalFlags = flags & ~NativeProtocol.FLAG_MORE_CHUNKS;
+            Pending current = pending.get(identity);
+            if (current == null && !more) {
+                checkSize(chunk.length);
+                return new Assembled(identity, logicalFlags, chunk);
+            }
+            if (current == null) {
+                current = new Pending(logicalFlags, Math.min(chunk.length, maxResponseBytes));
+                pending.put(identity, current);
+            }
+            try {
+                current.append(chunk, logicalFlags, maxResponseBytes, maxChunks);
+            } catch (RuntimeException error) {
+                pending.remove(identity);
+                throw error;
+            }
+            if (more) {
+                return null;
+            }
             pending.remove(identity);
-            throw error;
+            return new Assembled(identity, current.flags, current.output.toByteArray());
         }
-        if (more) {
-            return null;
-        }
-        pending.remove(identity);
-        return new Assembled(identity, current.flags, current.output.toByteArray());
     }
 
-    synchronized void reconfigure(int negotiatedMaxResponseBytes) {
-        if (!pending.isEmpty()) {
-            throw new NativeProtocolException(
-                    "cannot change max_response_bytes while response chunks are pending");
+    void reconfigure(int negotiatedMaxResponseBytes) {
+        synchronized (pending) {
+            if (!pending.isEmpty()) {
+                throw new NativeProtocolException(
+                        "cannot change max_response_bytes while response chunks are pending");
+            }
+            if (negotiatedMaxResponseBytes <= 0) {
+                throw new IllegalArgumentException("negotiatedMaxResponseBytes must be positive");
+            }
+            maxResponseBytes = negotiatedMaxResponseBytes;
         }
-        if (negotiatedMaxResponseBytes <= 0) {
-            throw new IllegalArgumentException("negotiatedMaxResponseBytes must be positive");
-        }
-        maxResponseBytes = negotiatedMaxResponseBytes;
     }
 
-    synchronized int pendingCount() {
-        return pending.size();
+    int pendingCount() {
+        synchronized (pending) {
+            return pending.size();
+        }
     }
 
-    synchronized void clear() {
-        pending.clear();
+    void clear() {
+        synchronized (pending) {
+            pending.clear();
+        }
     }
 
     private void checkSize(int bytes) {
@@ -87,8 +94,7 @@ final class NativeResponseAssembler {
         private void append(byte[] chunk, int chunkFlags, int maxBytes, int maxChunks) {
             chunks++;
             if (chunks > maxChunks) {
-                throw new NativeProtocolException(
-                        "native response exceeds max_response_chunks");
+                throw new NativeProtocolException("native response exceeds max_response_chunks");
             }
             if (chunk.length > maxBytes - output.size()) {
                 throw new NativeProtocolException(

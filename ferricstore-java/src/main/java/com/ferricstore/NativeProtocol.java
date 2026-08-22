@@ -13,6 +13,7 @@ final class NativeProtocol {
     static final int OP_AUTH = 0x0002;
     static final int OP_QUIT = 0x0009;
     static final int OP_COMMAND_EXEC = 0x0100;
+    static final int OP_FLOW_QUERY = 0x0231;
 
     static final int STATUS_OK = 0;
     static final int STATUS_ERROR = 1;

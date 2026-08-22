@@ -24,7 +24,6 @@ final class FerricStoreWorkerTest {
                 queue.worker("worker-1")
                         .batchSize(2)
                         .concurrency(2)
-                        .virtualThreads()
                         .runOnce(
                                 job -> {
                                     started.countDown();
@@ -59,7 +58,6 @@ final class FerricStoreWorkerTest {
                 workflow.worker("worker-1", List.of("created"))
                         .batchSize(2)
                         .concurrency(2)
-                        .virtualThreads()
                         .runOnce();
 
         assertEquals(2, applied);
@@ -97,7 +95,7 @@ final class FerricStoreWorkerTest {
         @Override
         public Object execute(List<Object> args) {
             calls.add(List.copyOf(args));
-            if ("FLOW.CLAIM_DUE".equals(args.getFirst())) {
+            if ("FLOW.CLAIM_DUE".equals(args.get(0))) {
                 return claimResponse;
             }
             return "OK";
@@ -105,7 +103,7 @@ final class FerricStoreWorkerTest {
 
         private int count(String command) {
             synchronized (calls) {
-                return (int) calls.stream().filter(call -> command.equals(call.getFirst())).count();
+                return (int) calls.stream().filter(call -> command.equals(call.get(0))).count();
             }
         }
 
@@ -113,7 +111,7 @@ final class FerricStoreWorkerTest {
             synchronized (calls) {
                 List<Object> claim =
                         calls.stream()
-                                .filter(call -> "FLOW.CLAIM_DUE".equals(call.getFirst()))
+                                .filter(call -> "FLOW.CLAIM_DUE".equals(call.get(0)))
                                 .findFirst()
                                 .orElseThrow();
                 int limit = claim.indexOf("LIMIT");

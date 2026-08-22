@@ -64,6 +64,8 @@ final class Resp {
                 optionalString(map.get("correlation_id")),
                 decodeValueMap(codec, map.get("values")),
                 stringObjectMap(map.get("value_refs")),
+                stringObjectMap(map.get("attributes")),
+                stringObjectMap(map.get("state_meta")),
                 map);
     }
 
@@ -77,7 +79,10 @@ final class Resp {
         }
         long parsed;
         try {
-            parsed = value instanceof Number number ? number.longValue() : Long.parseLong(string(value));
+            parsed =
+                    value instanceof Number number
+                            ? number.longValue()
+                            : Long.parseLong(string(value));
         } catch (NumberFormatException ignored) {
             return null;
         }
@@ -97,10 +102,15 @@ final class Resp {
 
     static ClaimedItem claimedItem(Object value) {
         if (value instanceof List<?> list) {
-            if (list.size() < 4) {
-                throw new FerricStoreException(
-                        "expected claimed item array with at least 4 fields");
+            if (list.size() < 4 || list.size() > 6) {
+                throw new FerricStoreException("expected claimed item array with 4 to 6 fields");
             }
+            Map<String, Object> legacyAttributes =
+                    list.size() > 4 && mapLike(list.get(4))
+                            ? stringObjectMap(list.get(4))
+                            : Map.of();
+            Map<String, Object> attributes =
+                    list.size() > 5 ? stringObjectMap(list.get(5)) : legacyAttributes;
             return new ClaimedItem(
                     string(list.get(0)),
                     string(list.get(2)),
@@ -108,8 +118,11 @@ final class Resp {
                     optionalString(list.get(1)),
                     "",
                     "running",
-                    list.size() > 4 ? optionalString(list.get(4)) : null,
-                    null);
+                    list.size() > 4 && legacyAttributes.isEmpty()
+                            ? optionalString(list.get(4))
+                            : null,
+                    null,
+                    attributes);
         }
         Map<String, Object> map = map(value);
         return new ClaimedItem(
@@ -122,7 +135,14 @@ final class Resp {
                         ? "running"
                         : optionalString(map.get("state")),
                 optionalString(map.get("run_state")),
-                map.get("payload"));
+                map.get("payload"),
+                stringObjectMap(map.get("attributes")));
+    }
+
+    private static boolean mapLike(Object value) {
+        return value instanceof Map<?, ?>
+                || value instanceof List<?> list
+                        && ((!list.isEmpty() && isPairList(list)) || list.size() % 2 == 0);
     }
 
     static Map<String, Object> map(Object value) {
@@ -203,6 +223,26 @@ final class Resp {
 
     static List<Object> list(Object value) {
         return value instanceof List<?> list ? new ArrayList<>(list) : List.of();
+    }
+
+    static List<Map<String, Object>> maps(Object value) {
+        if (value == null) {
+            return List.of();
+        }
+        if (!(value instanceof List<?> list)) {
+            throw new FerricStoreException(
+                    "expected RESP array, got " + value.getClass().getSimpleName());
+        }
+        return list.stream().map(Resp::map).toList();
+    }
+
+    static Map<String, Object> optionalMap(Object value) {
+        if (value == null
+                || value instanceof List<?> list && list.isEmpty()
+                || value instanceof Map<?, ?> map && map.isEmpty()) {
+            return null;
+        }
+        return map(value);
     }
 
     static Map<String, Object> parseKv(Object value) {
