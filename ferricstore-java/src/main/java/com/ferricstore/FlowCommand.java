@@ -8,7 +8,7 @@ import java.util.OptionalInt;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/** FerricStore 0.11.8 Flow command catalog shared by every transport. */
+/** FerricStore 0.11.9 Flow command catalog shared by every transport. */
 public enum FlowCommand {
     CREATE("FLOW.CREATE", 0x0201),
     GET("FLOW.GET", 0x0202),

@@ -1,6 +1,6 @@
 services:
   ferricstore:
-    image: quay.io/ferricstore/ferricstore:0.11.8
+    image: quay.io/ferricstore/ferricstore:0.11.9
     ports:
       - "127.0.0.1:${FERRICSTORE_PORT:-6388}:6388"
     environment:

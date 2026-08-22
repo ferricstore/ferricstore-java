@@ -9,7 +9,7 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 final class FlowCommandCatalogTest {
-    private static final Set<String> OSS_0_11_8_FLOW_COMMANDS =
+    private static final Set<String> OSS_0_11_9_FLOW_COMMANDS =
             Set.of(
                     "FLOW.CREATE",
                     "FLOW.GET",
@@ -80,14 +80,14 @@ final class FlowCommandCatalogTest {
                     "FLOW.LIMIT.LIST");
 
     @Test
-    void catalogExactlyMatchesTheOss0118FlowSurface() {
+    void catalogExactlyMatchesTheOss0119FlowSurface() {
         Set<String> actual =
                 Arrays.stream(FlowCommand.values())
                         .map(FlowCommand::wireName)
                         .collect(Collectors.toUnmodifiableSet());
 
         assertEquals(67, actual.size());
-        assertEquals(OSS_0_11_8_FLOW_COMMANDS, actual);
+        assertEquals(OSS_0_11_9_FLOW_COMMANDS, actual);
         assertEquals(0x0231, FlowCommand.QUERY.nativeOpcode().orElseThrow());
         assertTrue(FlowCommand.QUERY_INDEXES.nativeOpcode().isEmpty());
     }
