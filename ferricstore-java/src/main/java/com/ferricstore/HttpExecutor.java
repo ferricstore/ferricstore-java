@@ -37,32 +37,50 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private static final byte[] EMPTY_BODY = new byte[0];
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> JSON_OBJECT = new TypeReference<>() {};
-    private static final Set<String> UNSUPPORTED_STATEFUL_COMMANDS =
+    private static final Set<String> CONNECTION_AFFINE_COMMANDS =
             Set.of(
+                    "ASKING",
                     "AUTH",
-                    "BLMOVE",
-                    "BLMPOP",
-                    "BLPOP",
-                    "BRPOP",
+                    "BACKPRESSURE",
                     "CLIENT",
+                    "CLIENT.INFO",
+                    "CLIENT.SETNAME",
                     "DISCARD",
+                    "EVENT",
                     "EXEC",
                     "FETCH_OR_COMPUTE",
                     "FETCH_OR_COMPUTE_ERROR",
                     "FETCH_OR_COMPUTE_RESULT",
+                    "GOAWAY",
                     "HELLO",
+                    "MONITOR",
                     "MULTI",
+                    "OPTIONS",
+                    "PIPELINE",
                     "PSUBSCRIBE",
+                    "PSYNC",
                     "PUNSUBSCRIBE",
                     "QUIT",
+                    "READONLY",
+                    "READWRITE",
+                    "REPLCONF",
                     "RESET",
+                    "ROUTE",
+                    "ROUTE_BATCH",
+                    "SANDBOX",
                     "SELECT",
+                    "SHARDS",
+                    "SSUBSCRIBE",
+                    "STARTUP",
                     "SUBSCRIBE",
+                    "SUBSCRIBE_EVENTS",
+                    "SUNSUBSCRIBE",
+                    "SYNC",
                     "UNSUBSCRIBE",
+                    "UNSUBSCRIBE_EVENTS",
                     "UNWATCH",
                     "WATCH",
-                    "XREAD",
-                    "XREADGROUP");
+                    "WINDOW_UPDATE");
 
     private final URI commandEndpoint;
     private final AtomicReference<HttpClient> client;
@@ -121,7 +139,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         envelope.put("encoding", HttpBinaryEnvelope.ENCODING);
         envelope.put("commands", encoded);
         byte[] requestBody = encodeRequest(envelope);
-        Map<String, Object> response = send(requestBody);
+        Map<String, Object> response = send(requestBody, effectiveRequestTimeout(commands));
         Object rawResults = response.get("results");
         if (!(rawResults instanceof List<?> results)) {
             throw invalidResponse("FerricStore HTTP response is missing results", response, null);
@@ -149,14 +167,19 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         client.set(null);
     }
 
-    private Map<String, Object> send(byte[] body) {
+    private Map<String, Object> send(byte[] body, Duration effectiveTimeout) {
         boolean acquired = false;
-        long timeoutNanos = durationToNanos(requestTimeout);
+        Long timeoutNanos = effectiveTimeout == null ? null : durationToNanos(effectiveTimeout);
         long started = System.nanoTime();
         try {
-            acquired =
-                    requestSlots.tryAcquire(
-                            timeoutNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+            if (timeoutNanos == null) {
+                requestSlots.acquire();
+                acquired = true;
+            } else {
+                acquired =
+                        requestSlots.tryAcquire(
+                                timeoutNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+            }
             if (!acquired) {
                 throw transportFailure(
                         "FerricStore HTTP request timed out waiting for client capacity",
@@ -164,7 +187,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                         null);
             }
             long elapsed = System.nanoTime() - started;
-            long remaining = Math.max(1L, timeoutNanos - elapsed);
+            Long remaining = timeoutNanos == null ? null : Math.max(1L, timeoutNanos - elapsed);
             HttpResponse<byte[]> response =
                     sendFollowingRedirects(body, started, timeoutNanos, remaining);
             Map<String, Object> payload =
@@ -205,18 +228,19 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     }
 
     private HttpResponse<byte[]> sendFollowingRedirects(
-            byte[] initialBody, long started, long timeoutNanos, long initialRemaining)
+            byte[] initialBody, long started, Long timeoutNanos, Long initialRemaining)
             throws IOException, InterruptedException {
         URI current = commandEndpoint;
         String method = "POST";
         byte[] body = initialBody;
-        long remaining = initialRemaining;
+        Long remaining = initialRemaining;
         int redirectCount = 0;
         while (true) {
             HttpRequest.Builder request =
-                    HttpRequest.newBuilder(current)
-                            .timeout(Duration.ofNanos(remaining))
-                            .header("Accept", "application/json");
+                    HttpRequest.newBuilder(current).header("Accept", "application/json");
+            if (remaining != null) {
+                request.timeout(Duration.ofNanos(remaining));
+            }
             headers.forEach(request::header);
             if ("POST".equals(method)) {
                 request.header("Content-Type", "application/json")
@@ -245,10 +269,12 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                 method = "GET";
                 body = EMPTY_BODY;
             }
-            long elapsed = System.nanoTime() - started;
-            remaining = Math.max(1L, timeoutNanos - elapsed);
-            if (elapsed >= timeoutNanos) {
-                throw new HttpTimeoutException("FerricStore HTTP redirect deadline exceeded");
+            if (timeoutNanos != null) {
+                long elapsed = System.nanoTime() - started;
+                remaining = Math.max(1L, timeoutNanos - elapsed);
+                if (elapsed >= timeoutNanos) {
+                    throw new HttpTimeoutException("FerricStore HTTP redirect deadline exceeded");
+                }
             }
         }
     }
@@ -322,6 +348,146 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                 raw);
     }
 
+    private Duration effectiveRequestTimeout(List<List<Object>> commands) {
+        Duration extension = Duration.ZERO;
+        for (List<Object> command : commands) {
+            BlockingBudget budget = blockingBudget(command);
+            if (budget.disableDefault()) {
+                return null;
+            }
+            try {
+                extension = extension.plus(budget.extension());
+            } catch (ArithmeticException error) {
+                return null;
+            }
+        }
+        try {
+            return requestTimeout.plus(extension);
+        } catch (ArithmeticException error) {
+            return null;
+        }
+    }
+
+    private static BlockingBudget blockingBudget(List<Object> original) {
+        if (original == null || original.isEmpty()) {
+            return BlockingBudget.NONE;
+        }
+        List<Object> command = canonicalCommand(original);
+        String name = commandName(command.get(0), 0).toUpperCase(Locale.ROOT);
+        List<Object> values = command.subList(1, command.size());
+        Object timeout = null;
+        double unitMillis = 0;
+        switch (name) {
+            case "BLPOP", "BRPOP", "BLMOVE", "BRPOPLPUSH", "BZPOPMIN", "BZPOPMAX" -> {
+                if (!values.isEmpty()) {
+                    timeout = values.get(values.size() - 1);
+                    unitMillis = 1_000;
+                }
+            }
+            case "BLMPOP", "BZMPOP" -> {
+                if (!values.isEmpty()) {
+                    timeout = values.get(0);
+                    unitMillis = 1_000;
+                }
+            }
+            case "XREAD", "XREADGROUP" -> {
+                timeout = streamBlockingTimeout(name, values);
+                unitMillis = 1;
+            }
+            case "WAIT", "WAITAOF" -> {
+                if (!values.isEmpty()) {
+                    timeout = values.get(values.size() - 1);
+                    unitMillis = 1;
+                }
+            }
+            case "FLOW.CLAIM_DUE", "FLOW.SCHEDULE.FIRE_DUE" -> {
+                timeout = namedBlockingTimeout(values);
+                unitMillis = 1;
+            }
+            default -> {
+                return BlockingBudget.NONE;
+            }
+        }
+        Double amount = nonNegativeFiniteDouble(timeout);
+        if (amount == null) {
+            return BlockingBudget.NONE;
+        }
+        if (amount == 0) {
+            return BlockingBudget.DISABLE_DEFAULT;
+        }
+        double nanoseconds = amount * unitMillis * 1_000_000d;
+        if (!Double.isFinite(nanoseconds) || nanoseconds >= Long.MAX_VALUE) {
+            return BlockingBudget.DISABLE_DEFAULT;
+        }
+        return new BlockingBudget(Duration.ofNanos((long) nanoseconds), false);
+    }
+
+    private static Object streamBlockingTimeout(String name, List<Object> values) {
+        int index = 0;
+        if ("XREADGROUP".equals(name)) {
+            if (values.size() < 3 || !"GROUP".equalsIgnoreCase(argumentText(values.get(0)))) {
+                return null;
+            }
+            index = 3;
+        }
+        while (index < values.size()) {
+            String option = argumentText(values.get(index)).toUpperCase(Locale.ROOT);
+            switch (option) {
+                case "STREAMS" -> {
+                    return null;
+                }
+                case "COUNT" -> index += 2;
+                case "BLOCK" -> {
+                    return index + 1 < values.size() ? values.get(index + 1) : null;
+                }
+                case "NOACK" -> {
+                    if (!"XREADGROUP".equals(name)) {
+                        return null;
+                    }
+                    index++;
+                }
+                default -> {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Object namedBlockingTimeout(List<Object> values) {
+        for (int index = 0; index + 1 < values.size(); index++) {
+            if ("BLOCK".equalsIgnoreCase(argumentText(values.get(index)))) {
+                return values.get(index + 1);
+            }
+        }
+        return null;
+    }
+
+    private static String argumentText(Object value) {
+        if (value instanceof byte[] bytes) {
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+        return String.valueOf(value);
+    }
+
+    private static Double nonNegativeFiniteDouble(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            double parsed = Double.parseDouble(argumentText(value));
+            return Double.isFinite(parsed) && parsed >= 0 ? parsed : null;
+        } catch (NumberFormatException error) {
+            return null;
+        }
+    }
+
+    private record BlockingBudget(Duration extension, boolean disableDefault) {
+        private static final BlockingBudget NONE = new BlockingBudget(Duration.ZERO, false);
+        private static final BlockingBudget DISABLE_DEFAULT =
+                new BlockingBudget(Duration.ZERO, true);
+    }
+
     private byte[] encodeRequest(Map<String, Object> envelope) {
         try {
             byte[] bytes = JSON.writeValueAsBytes(envelope);
@@ -343,9 +509,11 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         }
         String name = commandName(command.get(0), index);
         String normalized = name.toUpperCase(Locale.ROOT);
-        if (UNSUPPORTED_STATEFUL_COMMANDS.contains(normalized)) {
+        List<Object> effectiveCommand = canonicalCommand(command);
+        String effectiveName = commandName(effectiveCommand.get(0), index).toUpperCase(Locale.ROOT);
+        if (CONNECTION_AFFINE_COMMANDS.contains(effectiveName)) {
             throw new IllegalArgumentException(
-                    normalized
+                    effectiveName
                             + " requires a connection-affine native TCP transport and is not "
                             + "supported through HTTP");
         }
@@ -364,6 +532,15 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             encoded.add(HttpBinaryEnvelope.encode(command.get(argument)));
         }
         return encoded;
+    }
+
+    private static List<Object> canonicalCommand(List<Object> original) {
+        List<Object> command = original;
+        while (command.size() > 1
+                && "COMMAND_EXEC".equalsIgnoreCase(commandName(command.get(0), 0))) {
+            command = command.subList(1, command.size());
+        }
+        return command;
     }
 
     private static String commandName(Object value, int index) {

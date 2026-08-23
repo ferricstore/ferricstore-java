@@ -23,7 +23,7 @@ Artifacts are published under the FerricStore GitHub organization namespace. Jav
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
 </dependency>
 ```
 
@@ -33,7 +33,7 @@ Spring Boot:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
 </dependency>
 ```
 
@@ -43,7 +43,7 @@ Optional Spring Statemachine adapter:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
 </dependency>
 ```
 
@@ -68,7 +68,20 @@ HTTP also supports bearer tokens and custom headers. It uses Java 17's persisten
 
 For a private native CA, build an `SSLContext` and pass it through `NativeTransportOptions.builder().sslContext(context)`. The equivalent HTTPS option is available on `HttpTransportOptions`.
 
-Most commands work unchanged on both transports. Native TCP/TLS is required for connection-affine transactions, Pub/Sub subscriptions, blocking list operations, `XREAD`/`XREADGROUP`, and `FETCH_OR_COMPUTE*`. FerricStore OSS currently classifies both stream-read commands as session-scoped even without `BLOCK`. HTTP rejects these commands before sending a request; authentication is supplied in HTTP headers rather than with `AUTH`. Publishing ordinary Pub/Sub messages remains available over HTTP.
+Most commands work unchanged on both transports. HTTP supports blocking list operations and `XREAD`/`XREADGROUP` as long-lived single requests; the SDK extends the request deadline by each finite blocking timeout and disables its default deadline for an explicit infinite wait. Native TCP/TLS is required for connection-affine transactions, Pub/Sub subscriptions, `FETCH_OR_COMPUTE*`, and session-control commands. HTTP rejects those commands before sending a request; authentication is supplied in HTTP headers rather than with `AUTH`. Publishing ordinary Pub/Sub messages remains available over HTTP.
+
+Run the complete HTTP-compatible integration surface through a real TLS
+listener with ACL authentication using:
+
+```bash
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5 \
+  scripts/run-http-integration.sh
+```
+
+The runner creates a private CA, verifies that unauthenticated access and a
+restricted user's forbidden `SET` are rejected, and supplies
+`FERRICSTORE_USERNAME`, `FERRICSTORE_PASSWORD`, and `FERRICSTORE_CA_FILE`.
+Connection-affine tests remain in the native integration job.
 
 ## Local FerricStore
 

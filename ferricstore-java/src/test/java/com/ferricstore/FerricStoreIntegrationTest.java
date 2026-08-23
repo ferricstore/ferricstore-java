@@ -457,15 +457,13 @@ final class FerricStoreIntegrationTest {
         assertNotNull(client.command("RPOPLPUSH", listDst, listKey));
         assertTrue(number(client.command("LPUSHX", listKey, "left")) >= 1);
         assertTrue(number(client.command("RPUSHX", listKey, "right")) >= 1);
-        if (!isHttpIntegration()) {
-            assertNotNull(client.lists().blpop(List.of(listKey), 1));
-            assertTrue(client.lists().rpush(listKey, "block") >= 1);
-            assertNotNull(client.lists().brpop(List.of(listKey), 1));
-            assertTrue(client.lists().rpush(listKey, "move") >= 1);
-            assertNotNull(client.lists().blmove(listKey, listDst, "LEFT", "RIGHT", 1));
-            assertTrue(client.lists().rpush(listKey, "mpop") >= 1);
-            assertNotNull(client.lists().blmpop(1, List.of(listKey), "LEFT", 1));
-        }
+        assertNotNull(client.lists().blpop(List.of(listKey), 1));
+        assertTrue(client.lists().rpush(listKey, "block") >= 1);
+        assertNotNull(client.lists().brpop(List.of(listKey), 1));
+        assertTrue(client.lists().rpush(listKey, "move") >= 1);
+        assertNotNull(client.lists().blmove(listKey, listDst, "LEFT", "RIGHT", 1));
+        assertTrue(client.lists().rpush(listKey, "mpop") >= 1);
+        assertNotNull(client.lists().blmpop(1, List.of(listKey), "LEFT", 1));
     }
 
     private static void assertSetAndSortedSetCommands(FerricStoreClient client, String prefix) {
@@ -525,17 +523,12 @@ final class FerricStoreIntegrationTest {
         assertTrue(client.stream().xlen(stream) >= 1);
         assertFalse(client.stream().xrange(stream, "-", "+").isEmpty());
         assertNotNull(client.command("XREVRANGE", stream, "+", "-"));
-        if (!isHttpIntegration()) {
-            assertNotNull(client.stream().xread(Map.of(stream, "0-0"), 1, null));
-        }
+        assertNotNull(client.stream().xread(Map.of(stream, "0-0"), 1, null));
         assertNotNull(client.command("XINFO", "STREAM", stream));
         String group = "group-" + suffix;
         assertTrue(ok(client.command("XGROUP", "CREATE", stream, group, "0")));
-        if (!isHttpIntegration()) {
-            assertNotNull(
-                    client.stream()
-                            .xreadgroup(group, "consumer", Map.of(stream, ">"), 1, null, false));
-        }
+        assertNotNull(
+                client.stream().xreadgroup(group, "consumer", Map.of(stream, ">"), 1, null, false));
         assertTrue(client.stream().xack(stream, group, streamId) >= 0);
         assertTrue(number(client.command("XTRIM", stream, "MAXLEN", "~", 10)) >= 0);
         assertTrue(number(client.command("XDEL", stream, streamId)) >= 0);

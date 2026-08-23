@@ -198,37 +198,161 @@ final class HttpExecutorTest {
                         HttpExecutor.connect(server.url(), HttpTransportOptions.defaults())) {
             for (String command :
                     List.of(
+                            "ASKING",
                             "AUTH",
-                            "BLMOVE",
-                            "BLMPOP",
-                            "BLPOP",
-                            "BRPOP",
+                            "BACKPRESSURE",
                             "CLIENT",
+                            "CLIENT.INFO",
+                            "CLIENT.SETNAME",
                             "DISCARD",
+                            "EVENT",
                             "EXEC",
                             "FETCH_OR_COMPUTE",
                             "FETCH_OR_COMPUTE_ERROR",
                             "FETCH_OR_COMPUTE_RESULT",
+                            "GOAWAY",
                             "HELLO",
+                            "MONITOR",
                             "MULTI",
+                            "OPTIONS",
+                            "PIPELINE",
                             "PSUBSCRIBE",
+                            "PSYNC",
                             "PUNSUBSCRIBE",
                             "QUIT",
+                            "READONLY",
+                            "READWRITE",
+                            "REPLCONF",
                             "RESET",
+                            "ROUTE",
+                            "ROUTE_BATCH",
+                            "SANDBOX",
                             "SELECT",
+                            "SHARDS",
+                            "SSUBSCRIBE",
+                            "STARTUP",
                             "SUBSCRIBE",
+                            "SUBSCRIBE_EVENTS",
+                            "SUNSUBSCRIBE",
+                            "SYNC",
                             "UNSUBSCRIBE",
+                            "UNSUBSCRIBE_EVENTS",
                             "UNWATCH",
                             "WATCH",
-                            "XREAD",
-                            "XREADGROUP")) {
+                            "WINDOW_UPDATE")) {
                 IllegalArgumentException error =
                         assertThrows(
                                 IllegalArgumentException.class,
                                 () -> executor.execute(List.of(command)));
                 assertTrue(error.getMessage().contains("native TCP"));
             }
+            for (String command : List.of("AUTH", "SUBSCRIBE", "WATCH")) {
+                IllegalArgumentException error =
+                        assertThrows(
+                                IllegalArgumentException.class,
+                                () -> executor.execute(List.of("COMMAND_EXEC", command)));
+                assertTrue(error.getMessage().contains("native TCP"));
+            }
             assertEquals(0, requests.get());
+        }
+    }
+
+    @Test
+    void supportsBlockingCommandsAndExtendsTheirRequestDeadline() throws IOException {
+        List<String> commands = new CopyOnWriteArrayList<>();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    Object encoded =
+                                            ((List<?>) readJson(exchange).get("commands")).get(0);
+                                    commands.add(
+                                            encoded instanceof List<?> command
+                                                    ? command.get(0).toString()
+                                                    : ((Map<?, ?>) encoded)
+                                                            .get("command")
+                                                            .toString());
+                                    try {
+                                        Thread.sleep(75);
+                                    } catch (InterruptedException error) {
+                                        Thread.currentThread().interrupt();
+                                    }
+                                    replyOk(exchange, "ready");
+                                });
+                HttpExecutor executor =
+                        HttpExecutor.connect(
+                                server.url(),
+                                HttpTransportOptions.builder()
+                                        .requestTimeout(Duration.ofMillis(25))
+                                        .build())) {
+            for (List<Object> command :
+                    List.of(
+                            List.<Object>of("BLPOP", "queue", 1),
+                            List.<Object>of("BLMPOP", 1, 1, "queue", "LEFT"),
+                            List.<Object>of("BZPOPMIN", "scores", 1),
+                            List.<Object>of("BZMPOP", 1, 1, "scores", "MIN"),
+                            List.<Object>of("XREAD", "BLOCK", 0, "STREAMS", "events", "$"),
+                            List.<Object>of(
+                                    "XREADGROUP",
+                                    "GROUP",
+                                    "workers",
+                                    "worker-1",
+                                    "BLOCK",
+                                    200,
+                                    "STREAMS",
+                                    "events",
+                                    ">"),
+                            List.<Object>of("WAIT", 1, 200),
+                            List.<Object>of("WAITAOF", 1, 1, 200),
+                            List.<Object>of(
+                                    "FLOW.CLAIM_DUE", "jobs", "WORKER", "worker-1", "BLOCK", 200),
+                            List.<Object>of("FLOW.SCHEDULE.FIRE_DUE", "BLOCK", 200))) {
+                assertArrayEquals(bytes("ready"), (byte[]) executor.execute(command));
+            }
+        }
+        assertEquals(
+                List.of(
+                        "BLPOP",
+                        "BLMPOP",
+                        "BZPOPMIN",
+                        "BZMPOP",
+                        "XREAD",
+                        "XREADGROUP",
+                        "WAIT",
+                        "WAITAOF",
+                        "FLOW.CLAIM_DUE",
+                        "FLOW.SCHEDULE.FIRE_DUE"),
+                commands);
+    }
+
+    @Test
+    void flowClaimDueBlockZeroDisablesTheDefaultRequestDeadline() throws IOException {
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    try {
+                                        Thread.sleep(75);
+                                    } catch (InterruptedException error) {
+                                        Thread.currentThread().interrupt();
+                                    }
+                                    replyOk(exchange, "ready");
+                                });
+                HttpExecutor executor =
+                        HttpExecutor.connect(
+                                server.url(),
+                                HttpTransportOptions.builder()
+                                        .requestTimeout(Duration.ofMillis(25))
+                                        .build())) {
+            assertArrayEquals(
+                    bytes("ready"),
+                    (byte[])
+                            executor.execute(
+                                    List.of(
+                                            "FLOW.CLAIM_DUE",
+                                            "jobs",
+                                            "WORKER",
+                                            "worker-1",
+                                            "BLOCK",
+                                            0)));
         }
     }
 
