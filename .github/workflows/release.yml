@@ -25,11 +25,15 @@ jobs:
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: GPG_PASSPHRASE
       - run: mvn -B -P quality verify
-      - run: mvn -B -P release deploy
+      - run: >-
+          mvn -B -P release
+          -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter
+          -am deploy
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+      - run: scripts/verify-release-bundle.sh
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
