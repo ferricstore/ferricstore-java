@@ -17,6 +17,8 @@ final class HttpIntegrationReleaseContractTest {
         for (String required :
                 new String[] {
                     "FERRICSTORE_HTTP_TLS_ENABLED=true",
+                    "FERRICSTORE_HTTP_AUTH_CACHE_ENABLED=true",
+                    "FERRICSTORE_AUTH_RATE_LIMIT_MAX_ATTEMPTS=100000",
                     "FERRICSTORE_USERNAME",
                     "FERRICSTORE_PASSWORD",
                     "FERRICSTORE_CA_FILE",
@@ -28,7 +30,8 @@ final class HttpIntegrationReleaseContractTest {
                     "sdk-http-denied",
                     "ACL authorization probe unexpectedly allowed SET",
                     "unauthenticated HTTP request returned",
-                    "FerricStoreIntegrationTest"
+                    "FerricStoreIntegrationTest",
+                    "FerricStoreConcurrencyIntegrationTest"
                 }) {
             assertTrue(runner.contains(required), () -> "runner is missing " + required);
         }

@@ -37,7 +37,7 @@ chmod 600 "$tls_dir/ca.key"
 chmod 644 "$tls_dir/ca.pem" "$tls_dir/server.pem" "$tls_dir/server.key"
 rm -f "$tls_dir/ca.key" "$tls_dir/ca.srl" "$tls_dir/server.csr" "$tls_dir/extensions.cnf"
 
-docker run --detach --rm --name "$container" -p 127.0.0.1::8080 --mount "type=bind,source=$tls_dir/server.pem,target=/tls/server.pem,readonly" --mount "type=bind,source=$tls_dir/server.key,target=/tls/server.key,readonly" -e FERRICSTORE_PROTECTED_MODE=false -e FERRICSTORE_FLOW_SCHEDULER_ENABLED=false -e FERRICSTORE_HTTP_ENABLED=true -e FERRICSTORE_HTTP_BIND=0.0.0.0 -e FERRICSTORE_HTTP_PORT=8080 -e FERRICSTORE_HTTP2_ENABLED=true -e FERRICSTORE_HTTP_TLS_ENABLED=true -e FERRICSTORE_HTTP_TLS_CERT_FILE=/tls/server.pem -e FERRICSTORE_HTTP_TLS_KEY_FILE=/tls/server.key "$image" >/dev/null
+docker run --detach --rm --name "$container" -p 127.0.0.1::8080 --mount "type=bind,source=$tls_dir/server.pem,target=/tls/server.pem,readonly" --mount "type=bind,source=$tls_dir/server.key,target=/tls/server.key,readonly" -e FERRICSTORE_PROTECTED_MODE=false -e FERRICSTORE_FLOW_SCHEDULER_ENABLED=false -e FERRICSTORE_AUTH_RATE_LIMIT_MAX_ATTEMPTS=100000 -e FERRICSTORE_HTTP_ENABLED=true -e FERRICSTORE_HTTP_BIND=0.0.0.0 -e FERRICSTORE_HTTP_PORT=8080 -e FERRICSTORE_HTTP2_ENABLED=true -e FERRICSTORE_HTTP_TLS_ENABLED=true -e FERRICSTORE_HTTP_TLS_CERT_FILE=/tls/server.pem -e FERRICSTORE_HTTP_TLS_KEY_FILE=/tls/server.key -e FERRICSTORE_HTTP_AUTH_CACHE_ENABLED=true -e FERRICSTORE_HTTP_AUTH_CACHE_TTL_MS=300000 -e FERRICSTORE_HTTP_AUTH_CACHE_MAX_ENTRIES=10000 "$image" >/dev/null
 
 port="$(docker port "$container" 8080/tcp | sed 's/.*://')"
 ready=false
@@ -73,4 +73,4 @@ authenticated="$(curl --silent --show-error --output /dev/null --write-out '%{ht
   exit 1
 }
 
-env FERRICSTORE_INTEGRATION=1 FERRICSTORE_URL="https://127.0.0.1:$port" FERRICSTORE_USERNAME="$username" FERRICSTORE_PASSWORD="$password" FERRICSTORE_CA_FILE="$tls_dir/ca.pem" mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test
+env FERRICSTORE_INTEGRATION=1 FERRICSTORE_URL="https://127.0.0.1:$port" FERRICSTORE_USERNAME="$username" FERRICSTORE_PASSWORD="$password" FERRICSTORE_CA_FILE="$tls_dir/ca.pem" mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test

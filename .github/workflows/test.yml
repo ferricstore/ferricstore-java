@@ -55,7 +55,7 @@ jobs:
       - run: scripts/verify-release-layout.sh
 
   integration:
-    name: integration
+    name: native TCP command and concurrency integration
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -66,7 +66,9 @@ jobs:
           cache: maven
       - run: docker compose up -d ferricstore
       - run: scripts/wait-for-ferricstore.sh
-      - run: mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test
+      - run: >-
+          mvn -B -pl ferricstore-java -am
+          -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test
         env:
           FERRICSTORE_INTEGRATION: "1"
       - if: always()
@@ -75,7 +77,7 @@ jobs:
         run: docker compose down -v
 
   http-integration:
-    name: authenticated TLS HTTP integration
+    name: authenticated TLS HTTP command and concurrency integration
     runs-on: ubuntu-latest
     env:
       FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5

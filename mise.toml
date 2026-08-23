@@ -15,8 +15,12 @@ description = "Run formatting, static analysis, and tests"
 run = "mvn -B -Pquality verify"
 
 [tasks.integration]
-description = "Run native-protocol integration tests against local FerricStore"
-run = "FERRICSTORE_INTEGRATION=1 mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test"
+description = "Run native-protocol command and concurrency integration tests against local FerricStore"
+run = "FERRICSTORE_INTEGRATION=1 mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
+
+[tasks."integration:http"]
+description = "Run authenticated TLS HTTP command and concurrency integration tests in Docker"
+run = "scripts/run-http-integration.sh"
 
 [tasks."release:dry-run"]
 description = "Build and verify the exact Maven Central release reactor without publishing"
