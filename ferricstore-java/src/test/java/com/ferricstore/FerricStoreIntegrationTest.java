@@ -1,5 +1,10 @@
 package com.ferricstore;
 
+import static com.ferricstore.IntegrationTestEnvironment.assumeIntegration;
+import static com.ferricstore.IntegrationTestEnvironment.connectJson;
+import static com.ferricstore.IntegrationTestEnvironment.connectRaw;
+import static com.ferricstore.IntegrationTestEnvironment.isHttpIntegration;
+import static com.ferricstore.IntegrationTestEnvironment.suffix;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -8,20 +13,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.KeyStore;
-import java.security.cert.Certificate;
-import java.security.cert.CertificateFactory;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.function.Supplier;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManagerFactory;
 import org.junit.jupiter.api.Test;
 
 final class FerricStoreIntegrationTest {
@@ -1515,78 +1512,6 @@ final class FerricStoreIntegrationTest {
         command.add("DEL");
         command.addAll(keys.subList(start, end));
         client.command(command);
-    }
-
-    private static FerricStoreClient connectJson() {
-        return connect(new JsonCodec());
-    }
-
-    private static FerricStoreClient connectRaw() {
-        return connect(new RawCodec());
-    }
-
-    private static FerricStoreClient connect(Codec codec) {
-        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
-        String caFile = System.getenv("FERRICSTORE_CA_FILE");
-        if (!(url.startsWith("http://") || url.startsWith("https://"))) {
-            NativeTransportOptions.Builder options = NativeTransportOptions.builder();
-            if (caFile != null && !caFile.isBlank()) {
-                options.sslContext(trustContext(Path.of(caFile)));
-            }
-            return FerricStoreClient.connect(url, codec, options.build());
-        }
-        HttpTransportOptions.Builder options =
-                HttpTransportOptions.builder()
-                        .username(requiredEnvironment("FERRICSTORE_USERNAME"))
-                        .password(requiredEnvironment("FERRICSTORE_PASSWORD"));
-        if (url.startsWith("http://")) {
-            options.allowInsecureBasicAuthentication(true);
-        }
-        if (caFile != null && !caFile.isBlank()) {
-            options.sslContext(trustContext(Path.of(caFile)));
-        }
-        return FerricStoreClient.connect(url, codec, options.build());
-    }
-
-    private static String requiredEnvironment(String name) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) {
-            throw new IllegalStateException(name + " is required for HTTP integration tests");
-        }
-        return value;
-    }
-
-    private static SSLContext trustContext(Path certificateFile) {
-        try (java.io.InputStream input = Files.newInputStream(certificateFile)) {
-            Certificate certificate =
-                    CertificateFactory.getInstance("X.509").generateCertificate(input);
-            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-            trustStore.load(null, null);
-            trustStore.setCertificateEntry("ferricstore-http", certificate);
-            TrustManagerFactory trustManagers =
-                    TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            trustManagers.init(trustStore);
-            SSLContext context = SSLContext.getInstance("TLS");
-            context.init(null, trustManagers.getTrustManagers(), null);
-            return context;
-        } catch (java.io.IOException | java.security.GeneralSecurityException error) {
-            throw new IllegalStateException("failed to load FerricStore integration CA", error);
-        }
-    }
-
-    private static String suffix() {
-        return UUID.randomUUID().toString().replace("-", "");
-    }
-
-    private static void assumeIntegration() {
-        assumeTrue(
-                "1".equals(System.getenv("FERRICSTORE_INTEGRATION")),
-                "set FERRICSTORE_INTEGRATION=1 to run local FerricStore integration tests");
-    }
-
-    private static boolean isHttpIntegration() {
-        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
-        return url.startsWith("http://") || url.startsWith("https://");
     }
 
     private record ClaimedFlow(String id, String partitionKey, ClaimedItem job) {}

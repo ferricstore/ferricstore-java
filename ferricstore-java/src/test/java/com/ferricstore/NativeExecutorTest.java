@@ -25,6 +25,57 @@ import org.junit.jupiter.api.Test;
 
 final class NativeExecutorTest {
     @Test
+    void multiplexesConcurrentRequestsAndCorrelatesOutOfOrderResponses() throws Exception {
+        ExecutorService tasks = Executors.newFixedThreadPool(3);
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+
+                                    NativeFrame first = readRequest(socket);
+                                    NativeFrame second = readRequest(socket);
+                                    String firstValue = commandArgument(first);
+                                    String secondValue = commandArgument(second);
+                                    writeResponse(
+                                            socket,
+                                            second.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            secondValue);
+                                    writeResponse(
+                                            socket,
+                                            first.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            firstValue);
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                Future<Object> alpha =
+                        tasks.submit(() -> executor.execute(List.of("ECHO", "alpha")));
+                Future<Object> beta = tasks.submit(() -> executor.execute(List.of("ECHO", "beta")));
+
+                assertEquals("alpha", text(alpha.get()));
+                assertEquals("beta", text(beta.get()));
+            }
+            served.get();
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
     void negotiatesAuthenticatesBeforeDataAndReassemblesChunkedResponses() throws Exception {
         ExecutorService tasks = Executors.newSingleThreadExecutor();
         try (ServerSocket server = new ServerSocket(0)) {
@@ -436,6 +487,12 @@ final class NativeExecutorTest {
                 Map.of(
                         "limits", Map.of("max_response_bytes", (long) maxResponseBytes),
                         "response_codecs", Map.of("compact_response_opcodes", codecs)));
+    }
+
+    private static String commandArgument(NativeFrame frame) {
+        Map<String, Object> payload = map(frame.body());
+        assertEquals("ECHO", text(payload.get("command")));
+        return text(list(payload.get("args")).get(0));
     }
 
     private static NativeFrame readRequest(Socket socket) throws IOException {

@@ -81,6 +81,9 @@ FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1
 The runner creates a private CA, verifies that unauthenticated access and a
 restricted user's forbidden `SET` are rejected, and supplies
 `FERRICSTORE_USERNAME`, `FERRICSTORE_PASSWORD`, and `FERRICSTORE_CA_FILE`.
+It also drives 1,024 operation rounds across 32 concurrent callers through one
+shared HTTP client, checks response correlation and atomic updates, and proves
+that 16 blocking requests are simultaneously in flight at the server.
 Connection-affine tests remain in the native integration job.
 
 ## Local FerricStore
@@ -296,9 +299,16 @@ Run integration tests:
 ```bash
 docker compose up -d ferricstore
 scripts/wait-for-ferricstore.sh
-FERRICSTORE_INTEGRATION=1 mise exec -- mvn -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test
+mise run integration
 docker compose down -v
+
+# Authenticated TLS HTTP integration using the pinned Docker image
+mise run integration:http
 ```
+
+The native integration includes the same shared-client contention test plus a
+blocked-lane test proving that unrelated lanes continue on the same TCP
+connection.
 
 Generate API docs:
 
