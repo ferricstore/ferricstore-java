@@ -89,7 +89,9 @@ final class HttpIntegrationReleaseContractTest {
         String releaseValidation = job(releaseWorkflow, "  validate:\n", "  maven-central:\n");
         assertTrue(releaseValidation.contains("java-version: [17, 21]"));
         assertTrue(releaseValidation.contains("java-version: ${{ matrix.java-version }}"));
-        assertTrue(releaseValidation.contains("if: matrix.java-version == 17\n        run: mvn -B test"));
+        assertTrue(
+                releaseValidation.contains(
+                        "if: matrix.java-version == 17\n        run: mvn -B test"));
         assertTrue(
                 releaseValidation.contains(
                         "if: matrix.java-version == 21\n        run: mvn -B -P quality verify"));
