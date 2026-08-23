@@ -84,6 +84,19 @@ final class HttpIntegrationReleaseContractTest {
                 }) {
             assertTrue(mise.contains(task), () -> "mise is missing " + task);
         }
+
+        String releaseWorkflow = repositoryFile(".github/workflows/release.yml");
+        String releaseValidation = job(releaseWorkflow, "  validate:\n", "  maven-central:\n");
+        assertTrue(releaseValidation.contains("java-version: [17, 21]"));
+        assertTrue(releaseValidation.contains("java-version: ${{ matrix.java-version }}"));
+        assertTrue(releaseValidation.contains("if: matrix.java-version == 17\n        run: mvn -B test"));
+        assertTrue(
+                releaseValidation.contains(
+                        "if: matrix.java-version == 21\n        run: mvn -B -P quality verify"));
+        assertTrue(
+                releaseValidation.contains(
+                        "-Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest"));
+        assertTrue(releaseValidation.contains("scripts/run-http-integration.sh"));
     }
 
     private static void assertImmutableFerricStoreImages(String contents) {
