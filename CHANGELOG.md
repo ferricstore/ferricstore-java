@@ -3,9 +3,9 @@
 ## Unreleased
 
 - Exercise real shared-client concurrency against the pinned FerricStore OSS
-  image over native TCP and authenticated TLS HTTP, including atomic contention,
-  response correlation, simultaneous server-side HTTP blockers, out-of-order
-  native replies, and blocked-lane isolation.
+  image on Java 17 and Java 21 over native TCP and authenticated TLS HTTP,
+  including atomic contention, response correlation, simultaneous server-side
+  HTTP blockers, out-of-order native replies, and blocked-lane isolation.
 
 ## 0.1.1 - 2026-08-23
 
