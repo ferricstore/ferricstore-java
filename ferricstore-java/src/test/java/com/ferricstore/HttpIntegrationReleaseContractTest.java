@@ -62,10 +62,42 @@ final class HttpIntegrationReleaseContractTest {
                                 + "      contents: write"));
     }
 
+    @Test
+    void liveTcpAndHttpIntegrationsRunOnJava17AndJava21() throws IOException {
+        String workflow = repositoryFile(".github/workflows/test.yml");
+        String tcpIntegration = job(workflow, "  integration:\n", "  http-integration:\n");
+        String httpIntegration = job(workflow, "  http-integration:\n", null);
+
+        for (String integration : new String[] {tcpIntegration, httpIntegration}) {
+            assertTrue(integration.contains("java-version: [17, 21]"));
+            assertTrue(integration.contains("java-version: ${{ matrix.java-version }}"));
+            assertTrue(integration.contains("integration java-${{ matrix.java-version }}"));
+        }
+
+        String mise = repositoryFile("mise.toml");
+        for (String task :
+                new String[] {
+                    "[tasks.\"integration:java17\"]",
+                    "[tasks.\"integration:java21\"]",
+                    "[tasks.\"integration:http:java17\"]",
+                    "[tasks.\"integration:http:java21\"]"
+                }) {
+            assertTrue(mise.contains(task), () -> "mise is missing " + task);
+        }
+    }
+
     private static void assertImmutableFerricStoreImages(String contents) {
         contents.lines()
                 .filter(line -> line.contains("quay.io/ferricstore/ferricstore:"))
                 .forEach(line -> assertTrue(line.contains("@sha256:"), line));
+    }
+
+    private static String job(String workflow, String startMarker, String endMarker) {
+        int start = workflow.indexOf(startMarker);
+        assertTrue(start >= 0, () -> "workflow is missing " + startMarker.trim());
+        int end = endMarker == null ? workflow.length() : workflow.indexOf(endMarker, start + 1);
+        assertTrue(end >= 0, () -> "workflow is missing " + endMarker.trim());
+        return workflow.substring(start, end);
     }
 
     private static String repositoryFile(String path) throws IOException {

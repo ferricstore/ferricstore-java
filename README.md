@@ -299,16 +299,18 @@ Run integration tests:
 ```bash
 docker compose up -d ferricstore
 scripts/wait-for-ferricstore.sh
-mise run integration
+mise run integration:java17
+mise run integration:java21
 docker compose down -v
 
 # Authenticated TLS HTTP integration using the pinned Docker image
-mise run integration:http
+mise run integration:http:java17
+mise run integration:http:java21
 ```
 
-The native integration includes the same shared-client contention test plus a
-blocked-lane test proving that unrelated lanes continue on the same TCP
-connection.
+Both Java 17 and Java 21 execute the identical full command and shared-client
+concurrency suites. The native integration also includes a blocked-lane test
+proving that unrelated lanes continue on the same TCP connection.
 
 Generate API docs:
 
