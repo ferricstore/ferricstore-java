@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-08-23
+
 - Built the Java SDK as a Maven multi-module repo.
 - Added `ferricstore-java` core client with codecs, typed FerricFlow commands, FerricStore native helpers, and store helpers.
 - Added explicit durable queue and workflow APIs.
