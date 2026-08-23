@@ -4,6 +4,7 @@
 
 ## 0.1.0 - 2026-08-23
 
+- Published the SDK and Spring integrations under `io.github.ferricstore` Maven coordinates.
 - Built the Java SDK as a Maven multi-module repo.
 - Added `ferricstore-java` core client with codecs, typed FerricFlow commands, FerricStore native helpers, and store helpers.
 - Added explicit durable queue and workflow APIs.

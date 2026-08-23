@@ -10,16 +10,18 @@ FLOW.CREATE -> FLOW.CLAIM_DUE -> handler -> FLOW.TRANSITION / COMPLETE / FAIL / 
 
 ## Modules
 
-- `com.ferricstore:ferricstore-java` - framework-neutral core SDK and native-protocol command helpers.
-- `com.ferricstore:ferricstore-spring-boot-starter` - Spring Boot auto-configuration.
-- `com.ferricstore:ferricstore-spring-statemachine` - optional Spring Statemachine adapter for workflow graph validation.
+- `io.github.ferricstore:ferricstore-java` - framework-neutral core SDK and native-protocol command helpers.
+- `io.github.ferricstore:ferricstore-spring-boot-starter` - Spring Boot auto-configuration.
+- `io.github.ferricstore:ferricstore-spring-statemachine` - optional Spring Statemachine adapter for workflow graph validation.
 - `ferricstore-examples` - compile-checked example programs.
 
 ## Maven
 
+Artifacts are published under the FerricStore GitHub organization namespace. Java packages remain under `com.ferricstore`.
+
 ```xml
 <dependency>
-  <groupId>com.ferricstore</groupId>
+  <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
   <version>0.1.0</version>
 </dependency>
@@ -29,7 +31,7 @@ Spring Boot:
 
 ```xml
 <dependency>
-  <groupId>com.ferricstore</groupId>
+  <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
   <version>0.1.0</version>
 </dependency>
@@ -39,7 +41,7 @@ Optional Spring Statemachine adapter:
 
 ```xml
 <dependency>
-  <groupId>com.ferricstore</groupId>
+  <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
   <version>0.1.0</version>
 </dependency>

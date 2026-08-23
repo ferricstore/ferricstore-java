@@ -38,7 +38,7 @@ jobs:
       - run: mvn -B -P quality verify
 
   package:
-    name: package dry-run
+    name: release dry-run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -47,7 +47,12 @@ jobs:
           distribution: temurin
           java-version: 17
           cache: maven
-      - run: mvn -B -DskipTests package
+      - run: mvn -B clean
+      - run: >-
+          mvn -B -P release -Dgpg.skip=true
+          -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter
+          -am package
+      - run: scripts/verify-release-layout.sh
 
   integration:
     name: integration

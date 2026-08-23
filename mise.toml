@@ -17,3 +17,11 @@ run = "mvn -B -Pquality verify"
 [tasks.integration]
 description = "Run native-protocol integration tests against local FerricStore"
 run = "FERRICSTORE_INTEGRATION=1 mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test"
+
+[tasks."release:dry-run"]
+description = "Build and verify the exact Maven Central release reactor without publishing"
+run = """
+mvn -B clean
+mvn -B -P release -Dgpg.skip=true -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter -am package
+scripts/verify-release-layout.sh
+"""
