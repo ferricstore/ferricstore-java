@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-08-23
+
+- Run the complete HTTP-compatible Java integration surface against an
+  authenticated TLS listener in pull-request and Maven Central release gates.
+- Support blocking list, sorted-set, stream, replication-wait, and FerricFlow
+  polling commands as long-lived HTTP requests with validated timeout budgets.
+- Reject direct and `COMMAND_EXEC`-wrapped connection-affine commands locally,
+  preserve the native transport boundary, and document HTTPS test setup.
+- Keep temporary TLS material in an owner-only directory, delete the CA key
+  before container start, and expose only the server certificate/key read-only.
+
 ## 0.1.0 - 2026-08-23
 
 - Published the SDK and Spring integrations under `io.github.ferricstore` Maven coordinates.
