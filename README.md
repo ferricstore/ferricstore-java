@@ -23,7 +23,7 @@ Artifacts are published under the FerricStore GitHub organization namespace. Jav
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 
@@ -33,7 +33,7 @@ Spring Boot:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 
@@ -43,7 +43,7 @@ Optional Spring Statemachine adapter:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 

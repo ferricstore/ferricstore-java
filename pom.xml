@@ -6,7 +6,7 @@
 
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java-parent</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
   <packaging>pom</packaging>
 
   <name>FerricStore Java SDK Parent</name>
@@ -39,7 +39,7 @@
     <connection>scm:git:git://github.com/ferricstore/ferricstore-java.git</connection>
     <developerConnection>scm:git:ssh://github.com/ferricstore/ferricstore-java.git</developerConnection>
     <url>https://github.com/ferricstore/ferricstore-java</url>
-    <tag>v0.1.1</tag>
+    <tag>v0.1.2</tag>
   </scm>
 
   <properties>

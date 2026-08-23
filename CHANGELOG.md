@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.2 - 2026-08-24
+
 - Exercise real shared-client concurrency against the pinned FerricStore OSS
   image on Java 17 and Java 21 over native TCP and authenticated TLS HTTP,
   including atomic contention, response correlation, simultaneous server-side

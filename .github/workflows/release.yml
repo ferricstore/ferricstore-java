@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   validate:
-    name: release integration gates
+    name: release integration gates java-${{ matrix.java-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java-version: [17, 21]
     env:
       FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5
     steps:
@@ -19,12 +23,17 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 21
+          java-version: ${{ matrix.java-version }}
           cache: maven
-      - run: mvn -B -P quality verify
+      - if: matrix.java-version == 17
+        run: mvn -B test
+      - if: matrix.java-version == 21
+        run: mvn -B -P quality verify
       - run: docker compose up -d ferricstore
       - run: scripts/wait-for-ferricstore.sh
-      - run: mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test
+      - run: >-
+          mvn -B -pl ferricstore-java -am
+          -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test
         env:
           FERRICSTORE_INTEGRATION: "1"
       - if: always()
