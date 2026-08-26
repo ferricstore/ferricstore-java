@@ -13,6 +13,8 @@ final class FlowCommandEncoder {
     private static final Set<FlowCommand> STRUCTURED_COMMANDS =
             Set.of(
                     FlowCommand.VALUE_MGET,
+                    FlowCommand.COMPLETE_MANY,
+                    FlowCommand.TRANSITION_MANY,
                     FlowCommand.STEP_CONTINUE,
                     FlowCommand.START_AND_CLAIM,
                     FlowCommand.RUN_STEPS_MANY,
@@ -117,7 +119,11 @@ final class FlowCommandEncoder {
                                                         + " has no native structured opcode"));
         List<Object> args = List.copyOf(arguments);
         Map<String, Object> payload;
-        if (command == FlowCommand.VALUE_MGET) {
+        if (command == FlowCommand.COMPLETE_MANY || command == FlowCommand.TRANSITION_MANY) {
+            FlowManyCommandEncoder.Prepared many =
+                    FlowManyCommandEncoder.tryPrepare(normalizedName, arguments);
+            return many == null ? null : new Prepared(command, many.opcode(), many.payload());
+        } else if (command == FlowCommand.VALUE_MGET) {
             payload = valueMget(args);
         } else if (command == FlowCommand.STEP_CONTINUE) {
             payload =

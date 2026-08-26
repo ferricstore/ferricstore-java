@@ -2,6 +2,7 @@ package com.ferricstore;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,7 +19,11 @@ final class Resp {
             throw new FerricStoreException(
                     "expected RESP array, got " + value.getClass().getSimpleName());
         }
-        return list.stream().map(item -> record(item, codec)).toList();
+        List<FlowRecord> records = new ArrayList<>(list.size());
+        for (Object item : list) {
+            records.add(record(item, codec));
+        }
+        return Collections.unmodifiableList(records);
     }
 
     static FlowRecord optionalRecord(Object value, Codec codec) {
@@ -97,7 +102,11 @@ final class Resp {
             throw new FerricStoreException(
                     "expected RESP array, got " + value.getClass().getSimpleName());
         }
-        return list.stream().map(Resp::claimedItem).toList();
+        List<ClaimedItem> items = new ArrayList<>(list.size());
+        for (Object item : list) {
+            items.add(claimedItem(item));
+        }
+        return Collections.unmodifiableList(items);
     }
 
     static ClaimedItem claimedItem(Object value) {

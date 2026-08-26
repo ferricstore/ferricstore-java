@@ -84,6 +84,10 @@ final class HttpIntegrationReleaseContractTest {
                 }) {
             assertTrue(mise.contains(task), () -> "mise is missing " + task);
         }
+        assertTrue(
+                mise.contains(
+                        "export FERRICSTORE_WAIT_SECONDS=\"${FERRICSTORE_WAIT_SECONDS:-120}\""),
+                "candidate integration must tolerate a cold multi-shard OSS startup");
 
         String releaseWorkflow = repositoryFile(".github/workflows/release.yml");
         String releaseValidation = job(releaseWorkflow, "  validate:\n", "  maven-central:\n");

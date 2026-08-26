@@ -52,17 +52,29 @@
     <Class name="~com\.ferricstore\..*Test" />
   </Match>
 
+  <!-- List.copyOf validates while snapshotting; translate its NPE to the public indexed error. -->
+  <Match>
+    <Bug pattern="DCN_NULLPOINTER_EXCEPTION" />
+    <Class name="com.ferricstore.FerricStoreClient" />
+    <Method name="copyArgs" />
+  </Match>
+
   <!-- Spring Boot's JavaBean configuration binder requires mutable nested property handles. -->
   <Match>
     <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2" />
     <Class name="~com\.ferricstore\.spring\.FerricStoreProperties.*" />
   </Match>
 
-  <!-- Null payloads are encoded as absent FerricStore values, not empty byte arrays. -->
+  <!-- Null marks absent values or an unsupported compact fast path, not empty byte arrays. -->
   <Match>
     <Bug pattern="PZLA_PREFER_ZERO_LENGTH_ARRAYS" />
     <Or>
       <Class name="com.ferricstore.JsonCodec" />
+      <Class name="com.ferricstore.FlowCreatePipeline" />
+      <Class name="com.ferricstore.NativeFlowPipelineCodec" />
+      <Class name="com.ferricstore.NativeFlowManyCodec" />
+      <Class name="com.ferricstore.NativePipelineCodec" />
+      <Class name="com.ferricstore.NativeFlowManyCodecTest" />
       <Class name="com.ferricstore.RawCodec" />
       <Class name="com.ferricstore.Resp" />
     </Or>
@@ -89,12 +101,14 @@
     <Class name="com.ferricstore.NativeExecutor" />
   </Match>
 
-  <!-- Protocol failures deliberately cross private runtime-only boundaries. -->
+  <!-- Protocol and future failures deliberately cross private runtime-only boundaries. -->
   <Match>
     <Bug pattern="THROWS_METHOD_THROWS_RUNTIMEEXCEPTION" />
     <Or>
+      <Class name="com.ferricstore.AsyncFutures" />
       <Class name="com.ferricstore.NativeExecutor" />
       <Class name="com.ferricstore.NativeResponseAssembler" />
+      <Class name="~com\.ferricstore\.examples\.ProtocolWorkflowBenchmark.*" />
     </Or>
   </Match>
 

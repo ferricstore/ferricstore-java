@@ -58,7 +58,10 @@ final class FerricStoreAutoConfigurationTest {
                         "ferricstore.url=https://gateway.example",
                         "ferricstore.http.username=lambda",
                         "ferricstore.http.password=secret",
-                        "ferricstore.http.max-concurrent-requests=32")
+                        "ferricstore.http.max-concurrent-requests=32",
+                        "ferricstore.http.max-pending-requests=64",
+                        "ferricstore.native.max-pending-requests=128",
+                        "ferricstore.http.compact=true")
                 .run(
                         context -> {
                             FerricStoreProperties properties =
@@ -67,6 +70,10 @@ final class FerricStoreAutoConfigurationTest {
                             assertThat(properties.getHttp().getPassword()).isEqualTo("secret");
                             assertThat(properties.getHttp().getMaxConcurrentRequests())
                                     .isEqualTo(32);
+                            assertThat(properties.getHttp().getMaxPendingRequests()).isEqualTo(64);
+                            assertThat(properties.getNative().getMaxPendingRequests())
+                                    .isEqualTo(128);
+                            assertThat(properties.getHttp().isCompact()).isTrue();
                         });
     }
 

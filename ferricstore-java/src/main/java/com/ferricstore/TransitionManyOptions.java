@@ -16,12 +16,43 @@ public record TransitionManyOptions(
         Boolean independent,
         Map<String, ?> values,
         Map<String, String> valueRefs,
-        FlowMutationFields mutationFields) {
+        FlowMutationFields mutationFields,
+        boolean returnOkOnSuccess) {
     public TransitionManyOptions {
         items = ImmutableCopies.list(items);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
         mutationFields = mutationFields == null ? FlowMutationFields.empty() : mutationFields;
+    }
+
+    /** Retains the constructor shape published before the optional compact return mode. */
+    public TransitionManyOptions(
+            String partitionKey,
+            String fromState,
+            String toState,
+            List<FencedItem> items,
+            Object payload,
+            long runAtMs,
+            long nowMs,
+            Long priority,
+            Boolean independent,
+            Map<String, ?> values,
+            Map<String, String> valueRefs,
+            FlowMutationFields mutationFields) {
+        this(
+                partitionKey,
+                fromState,
+                toState,
+                items,
+                payload,
+                runAtMs,
+                nowMs,
+                priority,
+                independent,
+                values,
+                valueRefs,
+                mutationFields,
+                false);
     }
 
     public static Builder builder(String fromState, String toState, List<FencedItem> items) {
@@ -41,6 +72,7 @@ public record TransitionManyOptions(
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
         private FlowMutationFields mutationFields = FlowMutationFields.empty();
+        private boolean returnOkOnSuccess;
 
         private Builder(String fromState, String toState, List<FencedItem> items) {
             this.fromState = fromState;
@@ -93,6 +125,11 @@ public record TransitionManyOptions(
             return this;
         }
 
+        public Builder returnOkOnSuccess(boolean value) {
+            returnOkOnSuccess = value;
+            return this;
+        }
+
         public TransitionManyOptions build() {
             return new TransitionManyOptions(
                     partitionKey,
@@ -106,7 +143,8 @@ public record TransitionManyOptions(
                     independent,
                     Map.copyOf(values),
                     Map.copyOf(valueRefs),
-                    mutationFields);
+                    mutationFields,
+                    returnOkOnSuccess);
         }
     }
 }

@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,9 +31,43 @@ import org.junit.jupiter.api.Test;
 final class FerricStoreConcurrencyIntegrationTest {
     private static final int CONCURRENCY = 32;
     private static final int HTTP_BLOCKERS = 16;
+    private static final int ASYNC_OPERATIONS = 256;
     private static final int OPERATIONS = 1_024;
     private static final Pattern BLOCKED_CLIENTS =
             Pattern.compile("(?m)^blocked_clients:(\\d+)\\s*$");
+
+    @Test
+    void asyncSharedClientNeedsNoWaitingThreadPerRequest() throws Exception {
+        assumeIntegration();
+
+        String testId = suffix();
+        String counterKey = "java-sdk:async:{" + testId + "}:counter";
+        try (FerricStoreClient client = connectRaw()) {
+            client.command("DEL", counterKey);
+            List<CompletableFuture<Object>> echoes = new ArrayList<>(ASYNC_OPERATIONS);
+            for (int operation = 0; operation < ASYNC_OPERATIONS; operation++) {
+                echoes.add(client.commandAsync("ECHO", bytes("async-" + testId + '-' + operation)));
+            }
+            CompletableFuture.allOf(echoes.toArray(CompletableFuture[]::new))
+                    .get(30, TimeUnit.SECONDS);
+            for (int operation = 0; operation < ASYNC_OPERATIONS; operation++) {
+                assertBytesEqual(
+                        bytes("async-" + testId + '-' + operation), echoes.get(operation).join());
+            }
+
+            List<CompletableFuture<Object>> increments = new ArrayList<>(ASYNC_OPERATIONS);
+            for (int operation = 0; operation < ASYNC_OPERATIONS; operation++) {
+                increments.add(client.commandAsync("INCR", counterKey));
+            }
+            CompletableFuture.allOf(increments.toArray(CompletableFuture[]::new))
+                    .get(30, TimeUnit.SECONDS);
+            Set<Long> values = new HashSet<>();
+            increments.forEach(result -> values.add(Resp.number(result.join())));
+            assertEquals(ASYNC_OPERATIONS, values.size());
+            assertEquals(ASYNC_OPERATIONS, Resp.number(client.command("GET", counterKey)));
+            client.command("DEL", counterKey);
+        }
+    }
 
     @Test
     void oneSharedClientCorrelatesConcurrentResponsesAndPreservesAtomicUpdates() throws Exception {

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.3 - 2026-08-26
+
+- Bound HTTP capacity waiters and native multiplexed requests with configurable
+  fail-fast pending limits, including Spring Boot configuration.
+- Preserve real Java 17/21 concurrency over native TCP/TLS and authenticated
+  HTTP/HTTPS while preventing burst-driven client memory growth.
+- Add an explicit candidate-image integration gate for validating the SDK
+  against the FerricStore OSS release being prepared.
+
 ## 0.1.2 - 2026-08-24
 
 - Exercise real shared-client concurrency against the pinned FerricStore OSS

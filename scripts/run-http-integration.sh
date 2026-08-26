@@ -73,4 +73,21 @@ authenticated="$(curl --silent --show-error --output /dev/null --write-out '%{ht
   exit 1
 }
 
-env FERRICSTORE_INTEGRATION=1 FERRICSTORE_URL="https://127.0.0.1:$port" FERRICSTORE_USERNAME="$username" FERRICSTORE_PASSWORD="$password" FERRICSTORE_CA_FILE="$tls_dir/ca.pem" mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test
+format="${FERRICSTORE_HTTP_FORMAT:-json}"
+case "$format" in
+  json|msgpack) ;;
+  *)
+    echo "FERRICSTORE_HTTP_FORMAT must be json or msgpack" >&2
+    exit 1
+    ;;
+esac
+echo "Running authenticated TLS HTTP integration tests with $format" >&2
+env \
+  FERRICSTORE_INTEGRATION=1 \
+  FERRICSTORE_URL="https://127.0.0.1:$port" \
+  FERRICSTORE_USERNAME="$username" \
+  FERRICSTORE_PASSWORD="$password" \
+  FERRICSTORE_CA_FILE="$tls_dir/ca.pem" \
+  FERRICSTORE_HTTP_FORMAT="$format" \
+  mvn -B -pl ferricstore-java -am \
+    -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test

@@ -17,6 +17,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 public final class FerricStoreClient implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -106,7 +108,7 @@ public final class FerricStoreClient implements AutoCloseable {
         }
         String scheme = endpointScheme(endpoint);
         if ("ferric".equals(scheme) || "ferrics".equals(scheme)) {
-            NativeExecutor executor = NativeExecutor.connect(endpoint, nativeOptions.sslContext());
+            NativeExecutor executor = NativeExecutor.connectWithOptions(endpoint, nativeOptions);
             return new FerricStoreClient(executor, executor, codec);
         }
         if ("http".equals(scheme) || "https".equals(scheme)) {
@@ -136,6 +138,16 @@ public final class FerricStoreClient implements AutoCloseable {
         return executor.execute(copyArgs(args));
     }
 
+    /** Executes any FerricStore command without blocking for its response. */
+    public CompletableFuture<Object> commandAsync(Object... args) {
+        return commandAsync(args(args));
+    }
+
+    /** Executes any FerricStore command without blocking for its response. */
+    public CompletableFuture<Object> commandAsync(List<Object> args) {
+        return executor.executeAsync(copyArgs(args));
+    }
+
     /** Executes a catalogued Flow command with transport-independent arguments. */
     public Object command(FlowCommand command, Object... args) {
         List<Object> values = new ArrayList<>(args.length + 1);
@@ -144,8 +156,21 @@ public final class FerricStoreClient implements AutoCloseable {
         return executor.execute(values);
     }
 
+    /** Executes a catalogued Flow command without blocking for its response. */
+    public CompletableFuture<Object> commandAsync(FlowCommand command, Object... args) {
+        List<Object> values = new ArrayList<>(args.length + 1);
+        values.add(command.wireName());
+        values.addAll(List.of(args));
+        return executor.executeAsync(values);
+    }
+
     public List<Object> pipeline(List<List<Object>> commands) {
         return executor.pipeline(commands.stream().map(FerricStoreClient::copyArgs).toList());
+    }
+
+    /** Executes a command pipeline without blocking for its response. */
+    public CompletableFuture<List<Object>> pipelineAsync(List<List<Object>> commands) {
+        return executor.pipelineAsync(commands.stream().map(FerricStoreClient::copyArgs).toList());
     }
 
     /** Executes an FQL1 query and returns its complete versioned result envelope. */
@@ -154,6 +179,15 @@ public final class FerricStoreClient implements AutoCloseable {
             throw new IllegalArgumentException("Flow query must not be blank");
         }
         return Resp.map(executor.flowQuery(query, Map.copyOf(params)));
+    }
+
+    /** Executes an FQL1 query without blocking for its response. */
+    public CompletableFuture<Map<String, Object>> flowQueryAsync(
+            String query, Map<String, ?> params) {
+        if (query == null || query.isBlank()) {
+            throw new IllegalArgumentException("Flow query must not be blank");
+        }
+        return AsyncFutures.map(executor.flowQueryAsync(query, Map.copyOf(params)), Resp::map);
     }
 
     public KeyValueStore kv() {
@@ -727,6 +761,9 @@ public final class FerricStoreClient implements AutoCloseable {
         appendBool(cmd, "INDEPENDENT", options.independent());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
+        if (options.returnOkOnSuccess()) {
+            append(cmd, "RETURN", "OK_ON_SUCCESS");
+        }
         appendFencedItems(cmd, options.partitionKey(), options.items(), true);
         return recordsOrResponse(command(cmd));
     }
@@ -1443,7 +1480,7 @@ public final class FerricStoreClient implements AutoCloseable {
             }
             cmd.add(item.fencingToken());
             if (includeLease) {
-                cmd.add(item.leaseToken());
+                cmd.add(item.leaseToken() == null ? "-" : item.leaseToken());
             }
         }
     }
@@ -1458,17 +1495,21 @@ public final class FerricStoreClient implements AutoCloseable {
         return response;
     }
 
+    @SuppressWarnings("PMD.AvoidCatchingNPE") // Preserve the established indexed validation error.
     private static List<Object> copyArgs(List<Object> args) {
-        List<Object> copy = new ArrayList<>(args.size());
-        for (int i = 0; i < args.size(); i++) {
-            Object value = args.get(i);
-            if (value == null) {
-                throw new IllegalArgumentException(
-                        "Redis command argument cannot be null at index " + i);
+        Objects.requireNonNull(args, "command args");
+        try {
+            return List.copyOf(args);
+        } catch (NullPointerException error) {
+            for (int index = 0; index < args.size(); index++) {
+                if (args.get(index) == null) {
+                    throw new IllegalArgumentException(
+                            "Redis command argument cannot be null at index " + index, error);
+                }
             }
-            copy.add(value);
+            throw new IllegalArgumentException(
+                    "Redis command arguments cannot contain null", error);
         }
-        return List.copyOf(copy);
     }
 
     private static String endpointScheme(String endpoint) {

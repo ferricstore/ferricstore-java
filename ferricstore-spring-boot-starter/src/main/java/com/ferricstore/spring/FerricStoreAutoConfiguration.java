@@ -54,7 +54,9 @@ public class FerricStoreAutoConfiguration {
                         .maxResponseBytes(http.getMaxResponseBytes())
                         .maxBatchItems(http.getMaxBatchItems())
                         .maxConcurrentRequests(http.getMaxConcurrentRequests())
+                        .maxPendingRequests(http.getMaxPendingRequests())
                         .redirects(http.getRedirects())
+                        .compact(http.isCompact())
                         .allowInsecureBasicAuthentication(
                                 http.isAllowInsecureBasicAuthentication());
         if (hasText(http.getBearerToken())) {
@@ -68,8 +70,10 @@ public class FerricStoreAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    NativeTransportOptions ferricStoreNativeTransportOptions() {
-        return NativeTransportOptions.defaults();
+    NativeTransportOptions ferricStoreNativeTransportOptions(FerricStoreProperties properties) {
+        return NativeTransportOptions.builder()
+                .maxPendingRequests(properties.getNative().getMaxPendingRequests())
+                .build();
     }
 
     @Bean

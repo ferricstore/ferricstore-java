@@ -2,7 +2,7 @@
 set -euo pipefail
 
 expected_group_id="io.github.ferricstore"
-expected_version="0.1.2"
+expected_version="0.1.3"
 published_modules=(
   ferricstore-java
   ferricstore-spring-statemachine

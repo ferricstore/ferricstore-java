@@ -1,5 +1,7 @@
 package com.ferricstore;
 
+import com.fasterxml.jackson.core.JsonGenerator;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -9,8 +11,8 @@ import java.util.Map;
 
 final class HttpBinaryEnvelope {
     static final String ENCODING = "ferricstore-json-v1";
-    private static final String BYTES_TAG = "$ferricstore_bytes";
-    private static final String MAP_TAG = "$ferricstore_map";
+    static final String BYTES_TAG = "$ferricstore_bytes";
+    static final String MAP_TAG = "$ferricstore_map";
 
     private HttpBinaryEnvelope() {}
 
@@ -48,6 +50,70 @@ final class HttpBinaryEnvelope {
         }
         throw new IllegalArgumentException(
                 "HTTP command value is not JSON-compatible: " + value.getClass().getSimpleName());
+    }
+
+    static void writeJson(JsonGenerator output, Object value) throws IOException {
+        if (value instanceof byte[] bytes) {
+            output.writeStartObject();
+            output.writeBinaryField(BYTES_TAG, bytes);
+            output.writeEndObject();
+            return;
+        }
+        if (value instanceof ByteBuffer buffer) {
+            ByteBuffer copy = buffer.slice();
+            byte[] bytes = new byte[copy.remaining()];
+            copy.get(bytes);
+            output.writeStartObject();
+            output.writeBinaryField(BYTES_TAG, bytes);
+            output.writeEndObject();
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            output.writeStartObject();
+            output.writeArrayFieldStart(MAP_TAG);
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                output.writeStartArray();
+                writeJson(output, entry.getKey());
+                writeJson(output, entry.getValue());
+                output.writeEndArray();
+            }
+            output.writeEndArray();
+            output.writeEndObject();
+            return;
+        }
+        if (value instanceof List<?> list) {
+            output.writeStartArray();
+            for (Object item : list) {
+                writeJson(output, item);
+            }
+            output.writeEndArray();
+            return;
+        }
+        if (value instanceof Object[] array) {
+            output.writeStartArray();
+            for (Object item : array) {
+                writeJson(output, item);
+            }
+            output.writeEndArray();
+            return;
+        }
+        if ((value instanceof Float floatValue && !Float.isFinite(floatValue))
+                || (value instanceof Double doubleValue && !Double.isFinite(doubleValue))) {
+            throw new IllegalArgumentException("HTTP command floats must be finite");
+        }
+        if (value == null) {
+            output.writeNull();
+        } else if (value instanceof String text) {
+            output.writeString(text);
+        } else if (value instanceof Boolean booleanValue) {
+            output.writeBoolean(booleanValue);
+        } else if (value instanceof Number) {
+            output.writeObject(value);
+        } else {
+            throw new IllegalArgumentException(
+                    "HTTP command value is not JSON-compatible: "
+                            + value.getClass().getSimpleName());
+        }
     }
 
     static Object decode(Object value) {

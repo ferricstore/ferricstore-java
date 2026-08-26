@@ -106,4 +106,3 @@ Legend:
 - Rich worker lifecycle and partition scheduler parity with Python.
 - Producer backpressure/autobatch parity.
 - Generated command matrix tests for every Redis-compatible helper and edge option.
-- Async/reactive Java APIs.

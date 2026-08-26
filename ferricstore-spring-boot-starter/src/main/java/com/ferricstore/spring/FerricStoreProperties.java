@@ -17,6 +17,9 @@ public class FerricStoreProperties {
     /** HTTP/HTTPS transport settings; ignored for native TCP/TLS URLs. */
     private final Http http = new Http();
 
+    /** Native TCP/TLS transport settings; ignored for HTTP/HTTPS URLs. */
+    private final Native nativeTransport = new Native();
+
     public String getUrl() {
         return url;
     }
@@ -37,6 +40,10 @@ public class FerricStoreProperties {
         return http;
     }
 
+    public Native getNative() {
+        return nativeTransport;
+    }
+
     public static class Http {
         private String bearerToken;
         private String username;
@@ -48,8 +55,10 @@ public class FerricStoreProperties {
         private int maxResponseBytes = 16_777_216;
         private int maxBatchItems = 1_000;
         private int maxConcurrentRequests = 100;
+        private int maxPendingRequests = 1_000;
         private HttpClient.Redirect redirects = HttpClient.Redirect.ALWAYS;
         private boolean allowInsecureBasicAuthentication;
+        private boolean compact;
 
         public String getBearerToken() {
             return bearerToken;
@@ -131,6 +140,14 @@ public class FerricStoreProperties {
             this.maxConcurrentRequests = maxConcurrentRequests;
         }
 
+        public int getMaxPendingRequests() {
+            return maxPendingRequests;
+        }
+
+        public void setMaxPendingRequests(int maxPendingRequests) {
+            this.maxPendingRequests = maxPendingRequests;
+        }
+
         public HttpClient.Redirect getRedirects() {
             return redirects;
         }
@@ -145,6 +162,26 @@ public class FerricStoreProperties {
 
         public void setAllowInsecureBasicAuthentication(boolean value) {
             allowInsecureBasicAuthentication = value;
+        }
+
+        public boolean isCompact() {
+            return compact;
+        }
+
+        public void setCompact(boolean value) {
+            compact = value;
+        }
+    }
+
+    public static class Native {
+        private int maxPendingRequests = 1_024;
+
+        public int getMaxPendingRequests() {
+            return maxPendingRequests;
+        }
+
+        public void setMaxPendingRequests(int maxPendingRequests) {
+            this.maxPendingRequests = maxPendingRequests;
         }
     }
 
