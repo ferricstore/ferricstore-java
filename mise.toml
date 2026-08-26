@@ -28,15 +28,99 @@ run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-21 -- mvn -B -pl ferrics
 
 [tasks."integration:http"]
 description = "Run authenticated TLS HTTP command and concurrency integration tests on Java 21"
-run = "scripts/run-http-integration.sh"
+run = "scripts/run-http-integration-matrix.sh"
 
 [tasks."integration:http:java17"]
 description = "Run authenticated TLS HTTP command and concurrency integration tests on Java 17"
-run = "mise exec java@temurin-17 -- scripts/run-http-integration.sh"
+run = "mise exec java@temurin-17 -- scripts/run-http-integration-matrix.sh"
 
 [tasks."integration:http:java21"]
 description = "Run authenticated TLS HTTP command and concurrency integration tests on Java 21"
-run = "mise exec java@temurin-21 -- scripts/run-http-integration.sh"
+run = "mise exec java@temurin-21 -- scripts/run-http-integration-matrix.sh"
+
+[tasks."integration:candidate"]
+description = "Run Java 17/21 native and HTTP integration against an explicit candidate OSS image"
+run = """
+export FERRICSTORE_IMAGE="${FERRICSTORE_CANDIDATE_IMAGE:?set FERRICSTORE_CANDIDATE_IMAGE}"
+export FERRICSTORE_WAIT_SECONDS="${FERRICSTORE_WAIT_SECONDS:-120}"
+trap 'docker compose down -v' EXIT
+docker compose up -d ferricstore
+scripts/wait-for-ferricstore.sh
+mise run integration:java17
+mise run integration:java21
+docker compose down -v
+trap - EXIT
+mise run integration:http:java17
+mise run integration:http:java21
+"""
+
+[tasks."benchmark:tcp"]
+description = "Run the Java KV benchmark against the local native endpoint"
+run = "scripts/run-kv-benchmark.sh --url ${FERRICSTORE_URL:-ferric://127.0.0.1:6388}"
+
+[tasks."benchmark:http"]
+description = "Run the Java KV benchmark against FERRICSTORE_HTTP_URL"
+run = "scripts/run-kv-benchmark.sh --url ${FERRICSTORE_HTTP_URL:?set FERRICSTORE_HTTP_URL}"
+
+[tasks."benchmark:tcp:java17"]
+description = "Run the native KV benchmark on Java 17"
+run = "mise exec java@temurin-17 -- scripts/run-kv-benchmark.sh --url ${FERRICSTORE_URL:-ferric://127.0.0.1:6388}"
+
+[tasks."benchmark:tcp:java21"]
+description = "Run the native KV benchmark on Java 21"
+run = "mise exec java@temurin-21 -- scripts/run-kv-benchmark.sh --url ${FERRICSTORE_URL:-ferric://127.0.0.1:6388}"
+
+[tasks."benchmark:http:java17"]
+description = "Run the HTTP KV benchmark on Java 17"
+run = "mise exec java@temurin-17 -- scripts/run-kv-benchmark.sh --url ${FERRICSTORE_HTTP_URL:?set FERRICSTORE_HTTP_URL}"
+
+[tasks."benchmark:http:java21"]
+description = "Run the HTTP KV benchmark on Java 21"
+run = "mise exec java@temurin-21 -- scripts/run-kv-benchmark.sh --url ${FERRICSTORE_HTTP_URL:?set FERRICSTORE_HTTP_URL}"
+
+[tasks."benchmark:workflow:tcp"]
+description = "Run the Python-shaped workflow benchmark against the local native endpoint"
+run = "scripts/run-workflow-benchmark.sh --url ${FERRICSTORE_URL:-ferric://127.0.0.1:6388}"
+
+[tasks."benchmark:workflow:http"]
+description = "Run the workflow benchmark against FERRICSTORE_HTTP_URL"
+run = "scripts/run-workflow-benchmark.sh --url ${FERRICSTORE_HTTP_URL:?set FERRICSTORE_HTTP_URL}"
+
+[tasks."benchmark:workflow:tcp:java17"]
+description = "Run the native workflow benchmark on Java 17"
+run = "mise exec java@temurin-17 -- scripts/run-workflow-benchmark.sh --url ${FERRICSTORE_URL:-ferric://127.0.0.1:6388}"
+
+[tasks."benchmark:workflow:tcp:java21"]
+description = "Run the native workflow benchmark on Java 21"
+run = "mise exec java@temurin-21 -- scripts/run-workflow-benchmark.sh --url ${FERRICSTORE_URL:-ferric://127.0.0.1:6388}"
+
+[tasks."benchmark:workflow:http:java17"]
+description = "Run the HTTP workflow benchmark on Java 17"
+run = "mise exec java@temurin-17 -- scripts/run-workflow-benchmark.sh --url ${FERRICSTORE_HTTP_URL:?set FERRICSTORE_HTTP_URL}"
+
+[tasks."benchmark:workflow:http:java21"]
+description = "Run the HTTP workflow benchmark on Java 21"
+run = "mise exec java@temurin-21 -- scripts/run-workflow-benchmark.sh --url ${FERRICSTORE_HTTP_URL:?set FERRICSTORE_HTTP_URL}"
+
+[tasks."benchmark:workflow:series:tcp:java17"]
+description = "Run a warm-up-aware native workflow benchmark series on Java 17"
+run = "mise exec java@temurin-17 -- scripts/run-workflow-benchmark-series.sh --url ${FERRICSTORE_URL:-ferric://127.0.0.1:6388}"
+
+[tasks."benchmark:workflow:series:tcp:java21"]
+description = "Run a warm-up-aware native workflow benchmark series on Java 21"
+run = "mise exec java@temurin-21 -- scripts/run-workflow-benchmark-series.sh --url ${FERRICSTORE_URL:-ferric://127.0.0.1:6388}"
+
+[tasks."benchmark:workflow:series:http:java17"]
+description = "Run a warm-up-aware HTTP workflow benchmark series on Java 17"
+run = "mise exec java@temurin-17 -- scripts/run-workflow-benchmark-series.sh --url ${FERRICSTORE_HTTP_URL:?set FERRICSTORE_HTTP_URL}"
+
+[tasks."benchmark:workflow:series:http:java21"]
+description = "Run a warm-up-aware HTTP workflow benchmark series on Java 21"
+run = "mise exec java@temurin-21 -- scripts/run-workflow-benchmark-series.sh --url ${FERRICSTORE_HTTP_URL:?set FERRICSTORE_HTTP_URL}"
+
+[tasks."benchmark:workflow:matrix"]
+description = "Run isolated Java 17/21 native and HTTP workflow benchmark series"
+run = "scripts/run-workflow-benchmark-matrix.sh"
 
 [tasks."release:dry-run"]
 description = "Build and verify the exact Maven Central release reactor without publishing"

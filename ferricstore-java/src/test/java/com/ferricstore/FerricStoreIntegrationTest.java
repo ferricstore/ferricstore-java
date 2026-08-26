@@ -5,10 +5,13 @@ import static com.ferricstore.IntegrationTestEnvironment.connectJson;
 import static com.ferricstore.IntegrationTestEnvironment.connectRaw;
 import static com.ferricstore.IntegrationTestEnvironment.isHttpIntegration;
 import static com.ferricstore.IntegrationTestEnvironment.suffix;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -22,6 +25,49 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
 final class FerricStoreIntegrationTest {
+    @Test
+    void homogeneousFlowCreatePipelinePreservesAbsentAndBinaryPayloads() {
+        assumeIntegration();
+
+        try (FerricStoreClient client = connectRaw()) {
+            String testId = suffix();
+            String type = "java-sdk-pipeline-create-" + testId;
+            String absentId = "java-sdk:pipeline:create:" + testId + ":absent";
+            String binaryId = "java-sdk:pipeline:create:" + testId + ":binary";
+            String duplicateId = "java-sdk:pipeline:create:" + testId + ":duplicate";
+            byte[] binaryPayload = {0, (byte) 0xff, 1};
+            long now = System.currentTimeMillis();
+
+            assertEquals(
+                    2,
+                    client.pipeline(
+                                    List.of(
+                                            flowCreateCommand(absentId, type, now, null),
+                                            flowCreateCommand(binaryId, type, now, binaryPayload)))
+                            .size());
+
+            FlowRecord absent = client.get(absentId, null);
+            FlowRecord binary = client.get(binaryId, null);
+            assertNotNull(absent);
+            assertNotNull(binary);
+            assertNull(absent.payload());
+            assertNull(absent.raw().get("payload_ref"));
+            Object binaryPayloadRef = binary.raw().get("payload_ref");
+            assertNotNull(binaryPayloadRef);
+            assertArrayEquals(
+                    binaryPayload,
+                    (byte[]) client.valueMGet(List.of(text(binaryPayloadRef))).get(0));
+
+            assertThrows(
+                    FerricStoreException.class,
+                    () ->
+                            client.pipeline(
+                                    List.of(
+                                            flowCreateCommand(duplicateId, type, now, null),
+                                            flowCreateCommand(duplicateId, type, now, null))));
+        }
+    }
+
     @Test
     void kvAndFlowRoundTripAgainstLocalServer() {
         assumeIntegration();
@@ -398,6 +444,22 @@ final class FerricStoreIntegrationTest {
         assertTrue(number(client.command("MEMORY", "USAGE", key)) >= 0);
         assertEquals("1", text(client.command("GETDEL", prefix + "setnx")));
         assertTrue(number(client.command("UNLINK", prefix + "nx1")) >= 0);
+    }
+
+    private static List<Object> flowCreateCommand(
+            String id, String type, long now, byte[] payload) {
+        List<Object> command =
+                new ArrayList<>(
+                        List.of("FLOW.CREATE", id, "TYPE", type, "STATE", "queued", "NOW", now));
+        if (payload != null) {
+            command.add("PAYLOAD");
+            command.add(payload);
+        }
+        command.add("RUN_AT");
+        command.add(now);
+        command.add("PRIORITY");
+        command.add(0);
+        return command;
     }
 
     private static void assertHashCommands(FerricStoreClient client, String prefix) {
@@ -1155,17 +1217,19 @@ final class FerricStoreIntegrationTest {
                         .build());
         List<ClaimedItem> manyJobs =
                 claimMany(client, type, "many-transition", transitionPartition, now, 2);
-        assertNotNull(
-                client.transitionMany(
-                        TransitionManyOptions.builder(
-                                        manyJobs.get(0).state(),
-                                        "many-complete",
-                                        manyJobs.stream()
-                                                .map(FerricStoreIntegrationTest::fenced)
-                                                .toList())
-                                .partitionKey(transitionPartition)
-                                .nowMs(now)
-                                .build()));
+        assertTrue(
+                ok(
+                        client.transitionMany(
+                                TransitionManyOptions.builder(
+                                                manyJobs.get(0).state(),
+                                                "many-complete",
+                                                manyJobs.stream()
+                                                        .map(FerricStoreIntegrationTest::fenced)
+                                                        .toList())
+                                        .partitionKey(transitionPartition)
+                                        .nowMs(now)
+                                        .returnOkOnSuccess(true)
+                                        .build())));
         List<ClaimedItem> completeJobs =
                 claimMany(client, type, "many-complete", transitionPartition, now + 1, 2);
         assertEquals(2, completeJobs.size());

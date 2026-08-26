@@ -10,6 +10,8 @@ import java.util.List;
 final class NativeCompactResponseCodec {
     private static final int COMPACT_KV_MGET = 0x83;
     private static final int COMPACT_KV_MGET_FIXED = 0x89;
+    private static final int COMPACT_OK_LIST = 0x81;
+    private static final int COMPACT_PIPELINE = 0x95;
     private static final int MAX_COLLECTION_ITEMS = 1_000_000;
 
     private NativeCompactResponseCodec() {}
@@ -21,6 +23,12 @@ final class NativeCompactResponseCodec {
         int status = (Byte.toUnsignedInt(body[0]) << 8) | Byte.toUnsignedInt(body[1]);
         if (status != NativeProtocol.STATUS_OK) {
             return NativeResponseCodec.decode(body);
+        }
+        if ("pipeline_v1".equals(codec)) {
+            return new NativeResponseCodec.Response(status, decodePipeline(body, codec));
+        }
+        if ("ok_list_v1".equals(codec)) {
+            return new NativeResponseCodec.Response(status, decodeOkList(body, codec));
         }
         if (!"kv_mget_v1".equals(codec)) {
             throw new NativeProtocolException(
@@ -37,6 +45,64 @@ final class NativeCompactResponseCodec {
                     default -> throw malformed(codec);
                 };
         return new NativeResponseCodec.Response(status, value);
+    }
+
+    private static List<Object> decodeOkList(byte[] body, String codec) {
+        ByteBuffer input = ByteBuffer.wrap(body).order(ByteOrder.BIG_ENDIAN);
+        input.position(2);
+        require(input, 1, codec);
+        if (Byte.toUnsignedInt(input.get()) != COMPACT_OK_LIST) {
+            throw malformed(codec);
+        }
+        int count = readCollectionCount(input, codec);
+        requireFullyConsumed(input, codec);
+        List<Object> values = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            values.add(new byte[] {'O', 'K'});
+        }
+        return Collections.unmodifiableList(values);
+    }
+
+    @SuppressWarnings("PMD.AvoidInstantiatingObjectsInLoops")
+    private static PipelineResults decodePipeline(byte[] body, String codec) {
+        ByteBuffer input = ByteBuffer.wrap(body).order(ByteOrder.BIG_ENDIAN);
+        input.position(2);
+        require(input, 1, codec);
+        if (Byte.toUnsignedInt(input.get()) != COMPACT_PIPELINE) {
+            throw malformed(codec);
+        }
+        int count = readCollectionCount(input, codec);
+        if (count > input.remaining()) {
+            throw malformed(codec);
+        }
+        List<Object> results = new ArrayList<>(count);
+        PipelineFailure firstFailure = null;
+        for (int index = 0; index < count; index++) {
+            require(input, 1, codec);
+            int status = Byte.toUnsignedInt(input.get());
+            if (status == 0) {
+                require(input, 1, codec);
+                int present = Byte.toUnsignedInt(input.get());
+                if (present == 0) {
+                    results.add(null);
+                } else if (present == 1) {
+                    results.add(readBinary(input, codec));
+                } else {
+                    throw malformed(codec);
+                }
+            } else if (status == 1 || status == 2) {
+                byte[] reason = readBinary(input, codec);
+                if (firstFailure == null) {
+                    firstFailure =
+                            new PipelineFailure(index, status == 1 ? "busy" : "error", reason);
+                }
+                results.add(null);
+            } else {
+                throw malformed(codec);
+            }
+        }
+        requireFullyConsumed(input, codec);
+        return new PipelineResults(Collections.unmodifiableList(results), firstFailure);
     }
 
     private static List<Object> decodeKvMget(ByteBuffer input, String codec) {
@@ -105,6 +171,14 @@ final class NativeCompactResponseCodec {
         return Integer.toUnsignedLong(input.getInt());
     }
 
+    private static int readCollectionCount(ByteBuffer input, String codec) {
+        long count = readUnsignedInt(input, codec);
+        if (count > MAX_COLLECTION_ITEMS) {
+            throw malformed(codec);
+        }
+        return (int) count;
+    }
+
     private static void require(ByteBuffer input, int bytes, String codec) {
         if (bytes < 0 || input.remaining() < bytes) {
             throw malformed(codec);
@@ -125,4 +199,8 @@ final class NativeCompactResponseCodec {
         return new NativeProtocolException(
                 "malformed native " + codec + " response payload", cause);
     }
+
+    record PipelineResults(List<Object> values, PipelineFailure firstFailure) {}
+
+    record PipelineFailure(int index, String status, Object value) {}
 }

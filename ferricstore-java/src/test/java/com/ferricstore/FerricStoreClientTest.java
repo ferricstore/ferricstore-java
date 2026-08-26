@@ -10,9 +10,39 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 final class FerricStoreClientTest {
+    @Test
+    void rawAsyncSurfaceCoversCommandsPipelinesAndFlowQueries() throws Exception {
+        FakeExecutor executor = new FakeExecutor("PONG", "one", "two", Map.of("version", "FQL1"));
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        assertEquals("PONG", client.commandAsync("PING").get(1, TimeUnit.SECONDS));
+        assertEquals(
+                List.of("one", "two"),
+                client.pipelineAsync(List.of(List.of("ECHO", "one"), List.of("ECHO", "two")))
+                        .get(1, TimeUnit.SECONDS));
+        assertEquals(
+                "FQL1",
+                client.flowQueryAsync("FROM flows", Map.of())
+                        .get(1, TimeUnit.SECONDS)
+                        .get("version"));
+    }
+
+    @Test
+    void rawCommandsPreserveTheNullArgumentErrorContract() {
+        FerricStoreClient client = FerricStoreClient.fromExecutor(new FakeExecutor("unused"));
+        List<Object> command = new ArrayList<>(List.of("SET", "key"));
+        command.add(null);
+
+        IllegalArgumentException error =
+                assertThrows(IllegalArgumentException.class, () -> client.command(command));
+
+        assertEquals("Redis command argument cannot be null at index 2", error.getMessage());
+    }
+
     @Test
     void transportOptionsMustMatchTheEndpointScheme() {
         assertThrows(
@@ -507,11 +537,12 @@ final class FerricStoreClientTest {
                                 "done",
                                 List.of(
                                         new FencedItem("a", 1, "la", "p1"),
-                                        new FencedItem("b", 2, "lb", "p2")))
+                                        new FencedItem("b", 2, "p2")))
                         .payload(bytes("next"))
                         .priority(5)
                         .nowMs(100)
                         .independent(true)
+                        .returnOkOnSuccess(true)
                         .build());
 
         assertArgs(
@@ -528,6 +559,8 @@ final class FerricStoreClientTest {
                         100L,
                         "INDEPENDENT",
                         "true",
+                        "RETURN",
+                        "OK_ON_SUCCESS",
                         "ITEMS",
                         "a",
                         "p1",
@@ -536,7 +569,7 @@ final class FerricStoreClientTest {
                         "b",
                         "p2",
                         2L,
-                        "lb"),
+                        "-"),
                 executor.last());
     }
 

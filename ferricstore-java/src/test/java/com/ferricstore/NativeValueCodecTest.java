@@ -129,6 +129,11 @@ final class NativeValueCodecTest {
                 NativeProtocolException.class,
                 () ->
                         NativeValueCodec.decode(
+                                new byte[] {6, 0, 0, 0, 1, 0, 0, 0, 2, (byte) 0xc3, 0x28, 0}));
+        assertThrows(
+                NativeProtocolException.class,
+                () ->
+                        NativeValueCodec.decode(
                                 new byte[] {
                                     6, 0, 0, 0, 2, 0, 0, 0, 1, 'x', 0, 0, 0, 0, 1, 'x', 0
                                 }));

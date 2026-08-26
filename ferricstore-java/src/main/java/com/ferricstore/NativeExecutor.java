@@ -22,7 +22,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -38,6 +38,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final int DATA_LANES = 32;
+    private static final int MAX_PIPELINE_COMMANDS = 1_024;
     private static final int MAX_REQUEST_BYTES = 64 * 1024 * 1024;
     private static final int MAX_BUFFERED_EVENTS = 1_024;
     private static final Object CLOSED_EVENT = new Object();
@@ -70,7 +71,8 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                     NativeProtocol.DEFAULT_MAX_RESPONSE_BYTES,
                     NativeProtocol.DEFAULT_MAX_RESPONSE_CHUNKS);
     private final NativeEndpoint endpoint;
-    private final SSLContext sslContext;
+    private final NativeTransportOptions transportOptions;
+    private final Semaphore pendingSlots;
     private final boolean dedicatedSession;
     private final Thread readerThread;
     private final BlockingQueue<Object> events = new ArrayBlockingQueue<>(MAX_BUFFERED_EVENTS);
@@ -82,12 +84,16 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             new AtomicReference<>();
     private final AtomicBoolean authenticated = new AtomicBoolean();
 
-    private NativeExecutor(NativeEndpoint endpoint, SSLContext sslContext, boolean dedicatedSession)
+    private NativeExecutor(
+            NativeEndpoint endpoint,
+            NativeTransportOptions transportOptions,
+            boolean dedicatedSession)
             throws IOException {
         this.endpoint = endpoint;
-        this.sslContext = sslContext;
+        this.transportOptions = transportOptions;
+        this.pendingSlots = new Semaphore(transportOptions.maxPendingRequests());
         this.dedicatedSession = dedicatedSession;
-        Socket connected = connectSocket(endpoint, sslContext);
+        Socket connected = connectSocket(endpoint, transportOptions.sslContext());
         this.socket = connected;
         try {
             this.input = connected.getInputStream();
@@ -106,14 +112,25 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     }
 
     public static NativeExecutor connect(String uri) {
-        return connect(uri, null);
+        return connectWithOptions(uri, NativeTransportOptions.defaults());
     }
 
     /** Connects with an optional caller-provided TLS context for {@code ferrics://} URLs. */
     public static NativeExecutor connect(String uri, SSLContext sslContext) {
+        NativeTransportOptions.Builder options = NativeTransportOptions.builder();
+        if (sslContext != null) {
+            options.sslContext(sslContext);
+        }
+        return connectWithOptions(uri, options.build());
+    }
+
+    /** Connects with caller-provided native transport limits and TLS settings. */
+    public static NativeExecutor connectWithOptions(
+            String uri, NativeTransportOptions transportOptions) {
+        Objects.requireNonNull(transportOptions, "native transport options");
         NativeEndpoint endpoint = NativeEndpoint.parse(uri);
         try {
-            NativeExecutor executor = new NativeExecutor(endpoint, sslContext, false);
+            NativeExecutor executor = new NativeExecutor(endpoint, transportOptions, false);
             try {
                 executor.initialize();
                 return executor;
@@ -138,7 +155,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     @Override
     public SessionCommandExecutor openSession() {
         try {
-            NativeExecutor session = new NativeExecutor(endpoint, sslContext, true);
+            NativeExecutor session = new NativeExecutor(endpoint, transportOptions, true);
             try {
                 session.initialize();
                 return session;
@@ -154,6 +171,111 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
     @Override
     public Object execute(List<Object> args) {
+        return AsyncFutures.await(
+                executeAsync(args),
+                error ->
+                        new NativeProtocolException(
+                                "native request was interrupted after sending; outcome is unknown",
+                                error));
+    }
+
+    @Override
+    public CompletableFuture<Object> executeAsync(List<Object> args) {
+        PreparedCommand prepared = prepareCommand(args, true);
+        if (prepared.flags() != 0) {
+            return requestWithRetryAsync(
+                    prepared.opcode(),
+                    prepared.laneId(),
+                    (byte[]) prepared.payload(),
+                    prepared.flags());
+        }
+        return requestWithRetryAsync(prepared.opcode(), prepared.laneId(), prepared.payload());
+    }
+
+    @Override
+    public CompletableFuture<List<Object>> pipelineAsync(List<List<Object>> commands) {
+        Objects.requireNonNull(commands, "commands");
+        if (commands.isEmpty()) {
+            return CompletableFuture.completedFuture(List.of());
+        }
+        List<CompletableFuture<List<Object>>> batches = new ArrayList<>();
+        for (int start = 0; start < commands.size(); start += MAX_PIPELINE_COMMANDS) {
+            int end = Math.min(start + MAX_PIPELINE_COMMANDS, commands.size());
+            batches.add(pipelineBatchAsync(commands.subList(start, end)));
+        }
+        return AsyncFutures.map(
+                AsyncFutures.sequence(batches),
+                batchResults -> {
+                    List<Object> results = new ArrayList<>(commands.size());
+                    batchResults.forEach(results::addAll);
+                    return java.util.Collections.unmodifiableList(results);
+                });
+    }
+
+    @SuppressWarnings("PMD.AvoidInstantiatingObjectsInLoops")
+    private CompletableFuture<List<Object>> pipelineBatchAsync(List<List<Object>> commands) {
+        FlowCreatePipeline.Batch flowCreateBatch = FlowCreatePipeline.tryParse(commands);
+        NativeFlowPipelineCodec.Encoded flowCreateMany =
+                NativeFlowPipelineCodec.tryEncodeCreateMany(flowCreateBatch);
+        if (flowCreateMany != null) {
+            int expected = commands.size();
+            long outerLane = laneFor(commands.get(0));
+            return AsyncFutures.map(
+                    requestWithRetryAsync(
+                            NativeProtocol.OP_FLOW_CREATE_MANY,
+                            outerLane,
+                            flowCreateMany.payload(),
+                            NativeProtocol.FLAG_CUSTOM_PAYLOAD),
+                    value -> requireFlowManyResults(value, expected));
+        }
+        if (flowCreateBatch != null) {
+            int expected = commands.size();
+            long outerLane = laneFor(commands.get(0));
+            return AsyncFutures.map(
+                    requestWithRetryAsync(
+                            NativeProtocol.OP_FLOW_CREATE_MANY,
+                            outerLane,
+                            flowCreateBatch.typedPayload()),
+                    value -> requireFlowManyResults(value, expected));
+        }
+        NativePipelineCodec.Encoded compact = NativePipelineCodec.tryEncodeDetailed(commands);
+        if (compact != null) {
+            int expected = commands.size();
+            long outerLane = laneFor(commands.get(0));
+            return AsyncFutures.map(
+                    requestWithRetryAsync(
+                            NativeProtocol.OP_PIPELINE,
+                            outerLane,
+                            compact.payload(),
+                            NativeProtocol.FLAG_CUSTOM_PAYLOAD),
+                    value -> requirePipelineResults(value, expected));
+        }
+
+        List<Object> encodedCommands = new ArrayList<>(commands.size());
+        long outerLane = 1;
+        for (int index = 0; index < commands.size(); index++) {
+            PreparedCommand prepared = prepareCommand(commands.get(index), false);
+            if (index == 0) {
+                outerLane = prepared.laneId();
+            }
+            Map<String, Object> encoded = new LinkedHashMap<>();
+            encoded.put("opcode", prepared.opcode());
+            encoded.put("lane_id", prepared.laneId());
+            encoded.put("request_id", index + 1L);
+            encoded.put("body", prepared.payload());
+            encodedCommands.add(encoded);
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("atomicity", "none");
+        payload.put("commands", encodedCommands);
+        payload.put("return", "pairs");
+        int expected = commands.size();
+        return AsyncFutures.map(
+                requestWithRetryAsync(NativeProtocol.OP_PIPELINE, outerLane, payload),
+                value -> requirePipelineResults(value, expected));
+    }
+
+    private PreparedCommand prepareCommand(List<Object> args, boolean allowCustomPayload) {
         List<Object> command = validatedCommand(args);
         String name = commandName(command.get(0)).toUpperCase(Locale.ROOT);
         if (!dedicatedSession && DEDICATED_SESSION_COMMANDS.contains(name)) {
@@ -161,57 +283,337 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                     name + " requires transaction() or pubsubSession() on native TCP/TLS");
         }
         long laneId = laneFor(command);
+        FlowManyCommandEncoder.Prepared flowMany =
+                FlowManyCommandEncoder.tryPrepare(name, command.subList(1, command.size()));
+        if (flowMany != null) {
+            if (allowCustomPayload) {
+                NativeFlowManyCodec.Encoded compact = NativeFlowManyCodec.tryEncode(flowMany);
+                if (compact != null) {
+                    return new PreparedCommand(
+                            flowMany.opcode(),
+                            laneId,
+                            compact.payload(),
+                            NativeProtocol.FLAG_CUSTOM_PAYLOAD);
+                }
+            }
+            return new PreparedCommand(flowMany.opcode(), laneId, flowMany.payload(), 0);
+        }
         FlowCommandEncoder.Prepared structured =
                 FlowCommandEncoder.prepare(name, command.subList(1, command.size()));
         if (structured != null) {
-            return requestWithRetry(structured.opcode(), laneId, structured.payload());
+            return new PreparedCommand(structured.opcode(), laneId, structured.payload(), 0);
         }
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("command", name);
         payload.put("args", new ArrayList<>(command.subList(1, command.size())));
-        return requestWithRetry(NativeProtocol.OP_COMMAND_EXEC, laneId, payload);
+        return new PreparedCommand(NativeProtocol.OP_COMMAND_EXEC, laneId, payload, 0);
     }
 
-    private Object requestWithRetry(int opcode, long laneId, Object payload) {
-        int retries = 0;
-        while (true) {
-            try {
-                NativeResponseCodec.Response response = request(opcode, laneId, payload);
-                return NativeResponseCodec.requireOk(response);
-            } catch (NativeServerException error) {
-                if (!NativeRetryPolicy.shouldRetry(error, retries)) {
-                    throw error;
-                }
-                retries++;
-                sleepForRetry(NativeRetryPolicy.retryAfterMs(error));
+    private static List<Object> requirePipelineResults(Object value, int expected) {
+        if (value instanceof NativeCompactResponseCodec.PipelineResults compact) {
+            if (compact.values().size() != expected) {
+                throw new NativeProtocolException(
+                        "native PIPELINE returned an invalid number of results");
             }
+            NativeCompactResponseCodec.PipelineFailure failure = compact.firstFailure();
+            if (failure != null) {
+                throw new NativeServerException(pipelineStatus(failure.status()), failure.value());
+            }
+            return compact.values();
+        }
+        if (!(value instanceof List<?> results) || results.size() != expected) {
+            throw new NativeProtocolException(
+                    "native PIPELINE returned an invalid number of results");
+        }
+        List<Object> values = new ArrayList<>(expected);
+        for (int index = 0; index < results.size(); index++) {
+            Object item = results.get(index);
+            if (!(item instanceof List<?> pair) || pair.size() != 2) {
+                throw new NativeProtocolException(
+                        "native PIPELINE returned an invalid result at index " + index);
+            }
+            String status = responseToken(pair.get(0));
+            if (!"ok".equals(status)) {
+                throw new NativeServerException(pipelineStatus(status), pair.get(1));
+            }
+            values.add(pair.get(1));
+        }
+        return java.util.Collections.unmodifiableList(values);
+    }
+
+    private static List<Object> requireFlowManyResults(Object value, int expected) {
+        if ("ok".equals(responseToken(value))) {
+            return java.util.Collections.nCopies(expected, value);
+        }
+        if (!(value instanceof List<?> results) || results.size() != expected) {
+            throw new NativeProtocolException(
+                    "native FLOW.CREATE_MANY returned an invalid number of results");
+        }
+        for (Object item : results) {
+            if (item instanceof List<?> pair && pair.size() == 2) {
+                String status = responseToken(pair.get(0));
+                if (!"ok".equals(status)) {
+                    throw new NativeServerException(pipelineStatus(status), pair.get(1));
+                }
+            }
+        }
+        return java.util.Collections.unmodifiableList(new ArrayList<>(results));
+    }
+
+    private static int pipelineStatus(String status) {
+        return switch (status) {
+            case "auth" -> NativeProtocol.STATUS_AUTH;
+            case "noperm" -> NativeProtocol.STATUS_NOPERM;
+            case "busy" -> NativeProtocol.STATUS_BUSY;
+            case "reroute" -> NativeProtocol.STATUS_REROUTE;
+            case "bad_request" -> NativeProtocol.STATUS_BAD_REQUEST;
+            default -> NativeProtocol.STATUS_ERROR;
+        };
+    }
+
+    private static String responseToken(Object value) {
+        if (value instanceof byte[] bytes) {
+            return new String(bytes, StandardCharsets.UTF_8).toLowerCase(Locale.ROOT);
+        }
+        return String.valueOf(value).toLowerCase(Locale.ROOT);
+    }
+
+    private CompletableFuture<Object> requestWithRetryAsync(
+            int opcode, long laneId, Object payload) {
+        byte[] body;
+        try {
+            body = NativeValueCodec.encode(payload, MAX_REQUEST_BYTES);
+            validateUnauthenticatedSize(body.length);
+        } catch (RuntimeException error) {
+            return AsyncFutures.failed(error);
+        }
+        return requestWithRetryAsync(opcode, laneId, body, 0);
+    }
+
+    private CompletableFuture<Object> requestWithRetryAsync(
+            int opcode, long laneId, byte[] body, int flags) {
+        try {
+            validateRequestBody(body);
+        } catch (RuntimeException error) {
+            return AsyncFutures.failed(error);
+        }
+        CompletableFuture<Object> result = new CompletableFuture<>();
+        requestAttempt(opcode, laneId, body, flags, 0, result);
+        return result;
+    }
+
+    private void requestAttempt(
+            int opcode,
+            long laneId,
+            byte[] body,
+            int flags,
+            int retries,
+            CompletableFuture<Object> result) {
+        if (result.isDone()) {
+            return;
+        }
+        CompletableFuture<NativeResponseCodec.Response> attempt =
+                requestEncodedAsync(opcode, laneId, body, flags);
+        result.whenComplete(
+                (ignored, failure) -> {
+                    if (result.isCancelled()) {
+                        attempt.cancel(false);
+                    }
+                });
+        attempt.whenComplete(
+                (response, failure) -> {
+                    if (failure != null) {
+                        result.completeExceptionally(AsyncFutures.unwrap(failure));
+                        return;
+                    }
+                    completeAttempt(opcode, laneId, body, flags, retries, result, response);
+                });
+    }
+
+    private void completeAttempt(
+            int opcode,
+            long laneId,
+            byte[] body,
+            int flags,
+            int retries,
+            CompletableFuture<Object> result,
+            NativeResponseCodec.Response response) {
+        try {
+            result.complete(NativeResponseCodec.requireOk(response));
+        } catch (NativeServerException error) {
+            if (!NativeRetryPolicy.shouldRetry(error, retries)) {
+                result.completeExceptionally(error);
+                return;
+            }
+            long delayMs = NativeRetryPolicy.retryAfterMs(error);
+            CompletableFuture.delayedExecutor(delayMs, TimeUnit.MILLISECONDS)
+                    .execute(
+                            () -> requestAttempt(opcode, laneId, body, flags, retries + 1, result));
+        } catch (RuntimeException error) {
+            result.completeExceptionally(error);
         }
     }
 
     @Override
     public Object flowQuery(String query, Map<String, ?> params) {
-        if (query == null || query.isBlank()) {
-            throw new IllegalArgumentException("Flow query must not be blank");
+        return AsyncFutures.await(
+                flowQueryAsync(query, params),
+                error ->
+                        new NativeProtocolException(
+                                "native Flow query was interrupted after sending; outcome is unknown",
+                                error));
+    }
+
+    @Override
+    public CompletableFuture<Object> flowQueryAsync(String query, Map<String, ?> params) {
+        try {
+            if (query == null || query.isBlank()) {
+                throw new IllegalArgumentException("Flow query must not be blank");
+            }
+            Objects.requireNonNull(params, "query params");
+            Map<String, Object> typedParams = new LinkedHashMap<>();
+            params.forEach(
+                    (name, value) -> {
+                        if (name == null || name.isBlank()) {
+                            throw new IllegalArgumentException(
+                                    "Flow query parameter names must not be blank");
+                        }
+                        typedParams.put(
+                                name, Objects.requireNonNull(value, "query parameter value"));
+                    });
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("version", "FQL1");
+            payload.put("query", query);
+            payload.put("params", typedParams);
+            Object route = typedParams.getOrDefault("partition", query);
+            long laneId = laneForRoute(route);
+            return AsyncFutures.map(
+                    requestAsync(NativeProtocol.OP_FLOW_QUERY, laneId, payload),
+                    NativeResponseCodec::requireOk);
+        } catch (RuntimeException error) {
+            return AsyncFutures.failed(error);
         }
-        Objects.requireNonNull(params, "query params");
-        Map<String, Object> typedParams = new LinkedHashMap<>();
-        params.forEach(
-                (name, value) -> {
-                    if (name == null || name.isBlank()) {
-                        throw new IllegalArgumentException(
-                                "Flow query parameter names must not be blank");
+    }
+
+    private NativeResponseCodec.Response request(int opcode, long laneId, Object payload) {
+        return AsyncFutures.await(
+                requestAsync(opcode, laneId, payload),
+                error ->
+                        new NativeProtocolException(
+                                "native request was interrupted after sending; outcome is unknown",
+                                error));
+    }
+
+    private CompletableFuture<NativeResponseCodec.Response> requestAsync(
+            int opcode, long laneId, Object payload) {
+        byte[] body;
+        try {
+            body = NativeValueCodec.encode(payload, MAX_REQUEST_BYTES);
+            validateUnauthenticatedSize(body.length);
+        } catch (RuntimeException error) {
+            return AsyncFutures.failed(error);
+        }
+        return requestEncodedAsync(opcode, laneId, body, 0);
+    }
+
+    private CompletableFuture<NativeResponseCodec.Response> requestEncodedAsync(
+            int opcode, long laneId, byte[] body, int flags) {
+        if (closed.get()) {
+            return AsyncFutures.failed(new NativeProtocolException("native connection is closed"));
+        }
+        try {
+            validateRequestBody(body);
+        } catch (RuntimeException error) {
+            return AsyncFutures.failed(error);
+        }
+        if (!pendingSlots.tryAcquire()) {
+            return AsyncFutures.failed(
+                    new NativeProtocolException("native pending request limit exceeded"));
+        }
+        if (closed.get()) {
+            pendingSlots.release();
+            return AsyncFutures.failed(new NativeProtocolException("native connection is closed"));
+        }
+        long requestId;
+        try {
+            requestId = nextRequestId();
+        } catch (RuntimeException error) {
+            pendingSlots.release();
+            return AsyncFutures.failed(error);
+        }
+        NativeFrame.Identity identity = new NativeFrame.Identity(laneId, opcode, requestId);
+        CompletableFuture<NativeResponseCodec.Response> wireResponse = new CompletableFuture<>();
+        CompletableFuture<NativeResponseCodec.Response> result = new CompletableFuture<>();
+        PendingRequest request = new PendingRequest(identity, wireResponse);
+        pending.put(requestId, request);
+
+        wireResponse
+                .orTimeout(REQUEST_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                .whenComplete(
+                        (response, failure) -> {
+                            removePending(requestId, request);
+                            if (failure instanceof TimeoutException) {
+                                result.completeExceptionally(
+                                        new NativeProtocolException(
+                                                "native request timed out after sending; outcome is unknown",
+                                                failure));
+                            } else if (failure != null) {
+                                result.completeExceptionally(AsyncFutures.unwrap(failure));
+                            } else {
+                                result.complete(response);
+                            }
+                        });
+        result.whenComplete(
+                (ignored, failure) -> {
+                    if (result.isCancelled()) {
+                        removePending(requestId, request);
+                        wireResponse.cancel(false);
                     }
-                    typedParams.put(name, Objects.requireNonNull(value, "query parameter value"));
                 });
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("version", "FQL1");
-        payload.put("query", query);
-        payload.put("params", typedParams);
-        Object route = typedParams.getOrDefault("partition", query);
-        long laneId = laneForRoute(route);
-        return NativeResponseCodec.requireOk(
-                request(NativeProtocol.OP_FLOW_QUERY, laneId, payload));
+
+        if (closed.get() && removePending(requestId, request)) {
+            wireResponse.completeExceptionally(
+                    new NativeProtocolException("native connection is closed"));
+            return result;
+        }
+
+        try {
+            synchronized (writeLock) {
+                NativeFrame.writeRequest(output, laneId, opcode, requestId, flags, body);
+                output.flush();
+            }
+        } catch (IOException error) {
+            removePending(requestId, request);
+            NativeProtocolException uncertain = uncertainOutcome(error);
+            wireResponse.completeExceptionally(uncertain);
+            terminate(uncertain);
+        }
+        return result;
+    }
+
+    private boolean removePending(long requestId, PendingRequest request) {
+        if (pending.remove(requestId, request)) {
+            pendingSlots.release();
+            return true;
+        }
+        return false;
+    }
+
+    private PendingRequest removePending(long requestId) {
+        PendingRequest request = pending.remove(requestId);
+        if (request != null) {
+            pendingSlots.release();
+        }
+        return request;
+    }
+
+    private void validateRequestBody(byte[] body) {
+        Objects.requireNonNull(body, "native request body");
+        if (body.length > MAX_REQUEST_BYTES) {
+            throw new NativeProtocolException("native request exceeds the maximum request size");
+        }
+        validateUnauthenticatedSize(body.length);
     }
 
     @Override
@@ -246,6 +648,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         Map<String, Object> hello = new LinkedHashMap<>();
         hello.put("compression", "none");
         hello.put("client_name", "ferricstore-java");
+        hello.put("compact_response_codecs", List.of("kv_mget_v1", "ok_list_v1", "pipeline_v1"));
         Object helloValue =
                 NativeResponseCodec.requireOk(request(NativeProtocol.OP_HELLO, 0, hello));
         NegotiatedCapabilities capabilities = NativeHelloContract.parse(helloValue);
@@ -268,56 +671,6 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         authenticated.set(!capabilities.authRequired() || endpoint.password() != null);
     }
 
-    private NativeResponseCodec.Response request(int opcode, long laneId, Object payload) {
-        if (closed.get()) {
-            throw new NativeProtocolException("native connection is closed");
-        }
-        byte[] body = NativeValueCodec.encode(payload, MAX_REQUEST_BYTES);
-        validateUnauthenticatedSize(body.length);
-        long requestId = nextRequestId();
-        NativeFrame.Identity identity = new NativeFrame.Identity(laneId, opcode, requestId);
-        PendingRequest request = new PendingRequest(identity, new CompletableFuture<>());
-        pending.put(requestId, request);
-        if (closed.get() && pending.remove(requestId, request)) {
-            throw new NativeProtocolException("native connection is closed");
-        }
-
-        try {
-            synchronized (writeLock) {
-                NativeFrame.writeRequest(output, laneId, opcode, requestId, 0, body);
-                output.flush();
-            }
-        } catch (IOException error) {
-            pending.remove(requestId, request);
-            NativeProtocolException uncertain = uncertainOutcome(error);
-            terminate(uncertain);
-            throw uncertain;
-        }
-        return await(requestId, request);
-    }
-
-    @SuppressWarnings("PMD.PreserveStackTrace") // ExecutionException is deliberately unwrapped.
-    private NativeResponseCodec.Response await(long requestId, PendingRequest request) {
-        try {
-            return request.future().get(REQUEST_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            pending.remove(requestId, request);
-            throw new NativeProtocolException(
-                    "native request was interrupted after sending; outcome is unknown", error);
-        } catch (TimeoutException error) {
-            pending.remove(requestId, request);
-            throw new NativeProtocolException(
-                    "native request timed out after sending; outcome is unknown", error);
-        } catch (ExecutionException error) {
-            Throwable cause = error.getCause();
-            if (cause instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            throw new NativeProtocolException("native request failed", cause);
-        }
-    }
-
     private void readLoop() {
         try {
             while (!closed.get()) {
@@ -338,7 +691,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                     }
                     continue;
                 }
-                PendingRequest request = pending.remove(assembled.identity().requestId());
+                PendingRequest request = removePending(assembled.identity().requestId());
                 if (request == null) {
                     continue;
                 }
@@ -404,7 +757,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         assembler.clear();
         pending.forEach(
                 (requestId, request) -> {
-                    if (pending.remove(requestId, request)) {
+                    if (removePending(requestId, request)) {
                         request.future().completeExceptionally(failure);
                     }
                 });
@@ -445,17 +798,15 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         if (args.isEmpty()) {
             throw new IllegalArgumentException("FerricStore command must not be empty");
         }
-        List<Object> copy = new ArrayList<>(args.size());
         for (int index = 0; index < args.size(); index++) {
             Object value = args.get(index);
             if (value == null) {
                 throw new IllegalArgumentException(
                         "FerricStore command argument cannot be null at index " + index);
             }
-            copy.add(value);
         }
-        commandName(copy.get(0));
-        return copy;
+        commandName(args.get(0));
+        return args;
     }
 
     private static String commandName(Object value) {
@@ -491,19 +842,6 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         return 1L + Math.floorMod(hash, DATA_LANES);
     }
 
-    private static void sleepForRetry(long delayMs) {
-        if (delayMs == 0) {
-            return;
-        }
-        try {
-            Thread.sleep(delayMs);
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            throw new NativeProtocolException(
-                    "interrupted during server-directed retry delay", error);
-        }
-    }
-
     private static long durationToNanos(Duration duration) {
         try {
             return duration.toNanos();
@@ -516,6 +854,8 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         return new NativeProtocolException(
                 "native connection failed after a request was sent; outcome is unknown", cause);
     }
+
+    private record PreparedCommand(int opcode, long laneId, Object payload, int flags) {}
 
     private static Socket connectSocket(NativeEndpoint endpoint, SSLContext sslContext)
             throws IOException {

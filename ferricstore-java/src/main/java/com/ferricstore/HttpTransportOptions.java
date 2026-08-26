@@ -13,6 +13,7 @@ public final class HttpTransportOptions {
     static final int DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
     static final int DEFAULT_MAX_BATCH_ITEMS = 1_000;
     static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 100;
+    static final int DEFAULT_MAX_PENDING_REQUESTS = 1_000;
 
     private final String bearerToken;
     private final String username;
@@ -24,11 +25,13 @@ public final class HttpTransportOptions {
     private final int maxResponseBytes;
     private final int maxBatchItems;
     private final int maxConcurrentRequests;
+    private final int maxPendingRequests;
     private final HttpClient.Version preferredVersion;
     private final HttpClient.Redirect redirects;
     private final SSLContext sslContext;
     private final HttpClient httpClient;
     private final boolean allowInsecureBasicAuthentication;
+    private final boolean compact;
 
     private HttpTransportOptions(Builder builder) {
         bearerToken = builder.bearerToken;
@@ -41,11 +44,13 @@ public final class HttpTransportOptions {
         maxResponseBytes = builder.maxResponseBytes;
         maxBatchItems = builder.maxBatchItems;
         maxConcurrentRequests = builder.maxConcurrentRequests;
+        maxPendingRequests = builder.maxPendingRequests;
         preferredVersion = builder.preferredVersion;
         redirects = builder.redirects;
         sslContext = builder.sslContext;
         httpClient = builder.httpClient;
         allowInsecureBasicAuthentication = builder.allowInsecureBasicAuthentication;
+        compact = builder.compact;
     }
 
     public static HttpTransportOptions defaults() {
@@ -96,6 +101,10 @@ public final class HttpTransportOptions {
         return maxConcurrentRequests;
     }
 
+    int maxPendingRequests() {
+        return maxPendingRequests;
+    }
+
     HttpClient.Version preferredVersion() {
         return preferredVersion;
     }
@@ -116,6 +125,10 @@ public final class HttpTransportOptions {
         return allowInsecureBasicAuthentication;
     }
 
+    boolean compact() {
+        return compact;
+    }
+
     public static final class Builder {
         private String bearerToken;
         private String username;
@@ -127,11 +140,13 @@ public final class HttpTransportOptions {
         private int maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES;
         private int maxBatchItems = DEFAULT_MAX_BATCH_ITEMS;
         private int maxConcurrentRequests = DEFAULT_MAX_CONCURRENT_REQUESTS;
+        private int maxPendingRequests = DEFAULT_MAX_PENDING_REQUESTS;
         private HttpClient.Version preferredVersion = HttpClient.Version.HTTP_1_1;
         private HttpClient.Redirect redirects = HttpClient.Redirect.ALWAYS;
         private SSLContext sslContext;
         private HttpClient httpClient;
         private boolean allowInsecureBasicAuthentication;
+        private boolean compact;
 
         private Builder() {}
 
@@ -201,6 +216,12 @@ public final class HttpTransportOptions {
             return this;
         }
 
+        /** Limits requests waiting for an HTTP concurrency slot. */
+        public Builder maxPendingRequests(int value) {
+            maxPendingRequests = positive(value, "maxPendingRequests");
+            return this;
+        }
+
         public Builder preferredVersion(HttpClient.Version value) {
             if (value == null) {
                 throw new IllegalArgumentException("preferredVersion cannot be null");
@@ -234,6 +255,12 @@ public final class HttpTransportOptions {
         /** Allows Basic credentials over {@code http://}; use only behind a trusted TLS ingress. */
         public Builder allowInsecureBasicAuthentication(boolean value) {
             allowInsecureBasicAuthentication = value;
+            return this;
+        }
+
+        /** Uses FerricStore's binary MessagePack HTTP envelope instead of binary-safe JSON. */
+        public Builder compact(boolean value) {
+            compact = value;
             return this;
         }
 

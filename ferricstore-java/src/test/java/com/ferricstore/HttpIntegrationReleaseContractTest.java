@@ -9,11 +9,15 @@ import org.junit.jupiter.api.Test;
 
 final class HttpIntegrationReleaseContractTest {
     private static final Path REPOSITORY = Path.of("..").toAbsolutePath().normalize();
+    private static final String RELEASE_IMAGE =
+            "quay.io/ferricstore/ferricstore:0.11.12@sha256:"
+                    + "3aef2c4200dff987a5797c08548582136d827838ccc0286aef5a00e8f4f6aa62";
 
     @Test
     void ciReleaseAndDocumentationRequireAuthenticatedTlsHttpIntegration() throws IOException {
         String runner = repositoryFile("scripts/run-http-integration.sh");
         assertImmutableFerricStoreImages(runner);
+        assertTrue(runner.contains(RELEASE_IMAGE));
         for (String required :
                 new String[] {
                     "FERRICSTORE_HTTP_TLS_ENABLED=true",
@@ -41,12 +45,14 @@ final class HttpIntegrationReleaseContractTest {
             String contents = repositoryFile(workflow);
             assertTrue(contents.contains("scripts/run-http-integration.sh"));
             assertTrue(contents.contains("@sha256:"));
+            assertTrue(contents.contains(RELEASE_IMAGE));
             assertImmutableFerricStoreImages(contents);
         }
 
         String readme = repositoryFile("README.md");
         assertTrue(readme.contains("run-http-integration.sh"));
         assertTrue(readme.contains("FERRICSTORE_CA_FILE"));
+        assertTrue(readme.contains(RELEASE_IMAGE));
     }
 
     @Test
@@ -84,6 +90,10 @@ final class HttpIntegrationReleaseContractTest {
                 }) {
             assertTrue(mise.contains(task), () -> "mise is missing " + task);
         }
+        assertTrue(
+                mise.contains(
+                        "export FERRICSTORE_WAIT_SECONDS=\"${FERRICSTORE_WAIT_SECONDS:-120}\""),
+                "candidate integration must tolerate a cold multi-shard OSS startup");
 
         String releaseWorkflow = repositoryFile(".github/workflows/release.yml");
         String releaseValidation = job(releaseWorkflow, "  validate:\n", "  maven-central:\n");

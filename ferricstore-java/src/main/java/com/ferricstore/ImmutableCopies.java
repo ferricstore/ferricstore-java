@@ -9,10 +9,12 @@ final class ImmutableCopies {
     private ImmutableCopies() {}
 
     static <T> List<T> list(List<? extends T> values) {
-        return values == null ? List.of() : List.copyOf(values);
+        return values == null || values.isEmpty() ? List.of() : List.copyOf(values);
     }
 
     static <K, V> Map<K, V> map(Map<? extends K, ? extends V> values) {
-        return values == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(values));
+        return values == null || values.isEmpty()
+                ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(values));
     }
 }

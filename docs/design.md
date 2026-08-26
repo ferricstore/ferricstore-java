@@ -65,6 +65,8 @@ The SDK keeps the hot path thin:
 - no method proxy requirement;
 - no generated wrappers around handlers;
 - one multiplexed native connection with a dedicated response reader;
+- request-id-correlated `CompletableFuture` commands that do not dedicate one waiting thread per
+  in-flight native or HTTP request;
 - reusable queue/workflow sessions that retain an SDK-owned executor across polls;
 - caller-supplied executors are borrowed and never closed by the SDK;
 - batch APIs such as `createMany`, `completeMany`, `transitionMany`, `retryMany`, `failMany`, and `cancelMany`;
@@ -74,7 +76,14 @@ The storage throughput story belongs mostly to FerricStore itself: FerricStore o
 
 ## Transport Boundaries
 
-HTTP/HTTPS uses persistent HTTP connections and sends a complete pipeline in one request. Ordinary data, administration, and FerricFlow commands have the same Java API on both transports. Commands whose correctness depends on a dedicated native server-side caller or connection are rejected locally over HTTP and remain available through native TCP/TLS. This includes blocking list operations, `XREAD`/`XREADGROUP` (classified as session-scoped by the current OSS HTTP gateway even without `BLOCK`), transactions, subscriptions, and `FETCH_OR_COMPUTE*`; the latter binds its ownership token to the native caller that acquired it.
+HTTP/HTTPS uses persistent HTTP connections, asynchronous `HttpClient` I/O, and sends a complete pipeline in one request. Binary-safe JSON is the compatibility default; applications using a current FerricStore HTTP gateway can select the compact MessagePack envelope to avoid Base64 conversion and expansion. Ordinary data, administration, and FerricFlow commands have the same Java API on both transports. Blocking list operations and `XREAD`/`XREADGROUP` use long-lived HTTP requests. Commands whose correctness depends on a dedicated native server-side caller or connection are rejected locally over HTTP and remain available through native TCP/TLS. This includes transactions, subscriptions, session-control commands, and `FETCH_OR_COMPUTE*`; the latter binds its ownership token to the native caller that acquired it.
+
+The synchronous command methods are compatibility wrappers over the asynchronous transport path.
+Native requests share one socket and are correlated by request ID; lanes preserve route-local order
+while allowing unrelated lanes to progress independently. HTTP capacity admission is asynchronous,
+so saturation waits for a bounded permit without consuming a caller thread. Both transports also
+bound pending work and reject overflow before request bodies and futures can accumulate without
+limit.
 
 ## Java Runtime And Worker Lifecycle
 

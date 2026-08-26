@@ -1,7 +1,6 @@
 package com.ferricstore;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -27,16 +26,17 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import javax.net.ssl.SSLContext;
 
 /** Ordered, binary-safe HTTP/HTTPS executor for FerricStore's stateless command endpoint. */
 public final class HttpExecutor implements CommandExecutor, AutoCloseable {
-    private static final byte[] EMPTY_BODY = new byte[0];
+    private static final EncodedBody EMPTY_BODY = new EncodedBody(new byte[0], 0);
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final TypeReference<Map<String, Object>> JSON_OBJECT = new TypeReference<>() {};
     private static final Set<String> CONNECTION_AFFINE_COMMANDS =
             Set.of(
                     "ASKING",
@@ -90,7 +90,8 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private final int maxResponseBytes;
     private final int maxBatchItems;
     private final HttpClient.Redirect redirects;
-    private final Semaphore requestSlots;
+    private final boolean compact;
+    private final AsyncPermitPool requestSlots;
     private final AtomicBoolean closed = new AtomicBoolean();
 
     private HttpExecutor(String endpoint, HttpTransportOptions options) {
@@ -102,7 +103,9 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         maxResponseBytes = options.maxResponseBytes();
         maxBatchItems = options.maxBatchItems();
         redirects = options.redirects();
-        requestSlots = new Semaphore(options.maxConcurrentRequests());
+        compact = options.compact();
+        requestSlots =
+                new AsyncPermitPool(options.maxConcurrentRequests(), options.maxPendingRequests());
     }
 
     public static HttpExecutor connect(String endpoint) {
@@ -116,166 +119,296 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
 
     @Override
     public Object execute(List<Object> args) {
-        return pipeline(List.of(args)).get(0);
+        return AsyncFutures.await(
+                executeAsync(args),
+                error ->
+                        transportFailure(
+                                "FerricStore HTTP request was interrupted; outcome is unknown",
+                                "transport_interrupted",
+                                error));
+    }
+
+    @Override
+    public CompletableFuture<Object> executeAsync(List<Object> args) {
+        return AsyncFutures.map(pipelineAsync(List.of(args)), results -> results.get(0));
     }
 
     @Override
     public List<Object> pipeline(List<List<Object>> commands) {
+        return AsyncFutures.await(
+                pipelineAsync(commands),
+                error ->
+                        transportFailure(
+                                "FerricStore HTTP request was interrupted; outcome is unknown",
+                                "transport_interrupted",
+                                error));
+    }
+
+    @Override
+    public CompletableFuture<List<Object>> pipelineAsync(List<List<Object>> commands) {
         Objects.requireNonNull(commands, "commands");
         requireOpen();
         if (commands.isEmpty()) {
-            return List.of();
+            return CompletableFuture.completedFuture(List.of());
         }
         if (commands.size() > maxBatchItems) {
             throw new IllegalArgumentException(
                     "HTTP command batch exceeds maxBatchItems=" + maxBatchItems);
         }
 
-        List<Object> encoded = new ArrayList<>(commands.size());
-        for (int index = 0; index < commands.size(); index++) {
-            encoded.add(encodeCommand(commands.get(index), index));
+        FlowCreatePipeline.Batch flowCreateBatch = FlowCreatePipeline.tryParse(commands);
+        EncodedBody requestBody =
+                compact
+                        ? encodeMessagePackRequest(commands, flowCreateBatch)
+                        : flowCreateBatch == null
+                                ? encodeRequest(commands)
+                                : encodeFlowCreateManyRequest(flowCreateBatch);
+        return AsyncFutures.map(
+                sendAsync(requestBody, effectiveRequestTimeout(commands)),
+                response ->
+                        flowCreateBatch == null
+                                ? decodePipelineResponse(commands.size(), response)
+                                : decodeFlowCreateManyResponse(flowCreateBatch.count(), response));
+    }
+
+    private List<Object> decodeFlowCreateManyResponse(
+            int expectedResults, Map<String, Object> response) {
+        Object value = decodePipelineResponse(1, response).get(0);
+        if ("ok".equals(responseToken(value))) {
+            return java.util.Collections.nCopies(expectedResults, value);
         }
-        Map<String, Object> envelope = new LinkedHashMap<>();
-        envelope.put("encoding", HttpBinaryEnvelope.ENCODING);
-        envelope.put("commands", encoded);
-        byte[] requestBody = encodeRequest(envelope);
-        Map<String, Object> response = send(requestBody, effectiveRequestTimeout(commands));
+        if (!(value instanceof List<?> results) || results.size() != expectedResults) {
+            throw invalidResponse(
+                    "FerricStore HTTP FLOW.CREATE_MANY returned an invalid number of results",
+                    response,
+                    null);
+        }
+        for (Object item : results) {
+            if (item instanceof List<?> pair && pair.size() == 2) {
+                String status = responseToken(pair.get(0));
+                if (!"ok".equals(status)) {
+                    Object detailValue = pair.get(1);
+                    Map<String, Object> detail = mapOrEmpty(detailValue);
+                    String code = textOr(detail.get("code"), status);
+                    String message = commandErrorMessage(detail, detailValue);
+                    throw commandError(message, code, detail, response);
+                }
+            }
+        }
+        return java.util.Collections.unmodifiableList(new ArrayList<>(results));
+    }
+
+    private static String commandErrorMessage(Map<String, Object> detail, Object detailValue) {
+        String fallback =
+                detailValue instanceof byte[] bytes
+                        ? new String(bytes, StandardCharsets.UTF_8)
+                        : String.valueOf(detailValue);
+        return textOr(detail.get("message"), fallback);
+    }
+
+    private List<Object> decodePipelineResponse(int expectedResults, Map<String, Object> response) {
         Object rawResults = response.get("results");
         if (!(rawResults instanceof List<?> results)) {
             throw invalidResponse("FerricStore HTTP response is missing results", response, null);
         }
-        if (results.size() != commands.size()) {
+        if (results.size() != expectedResults) {
             throw invalidResponse(
                     "FerricStore HTTP response returned "
                             + results.size()
                             + " results; expected "
-                            + commands.size(),
+                            + expectedResults,
                     response,
                     null);
         }
         Object responseEncoding = response.get("encoding");
-        if (responseEncoding != null && !HttpBinaryEnvelope.ENCODING.equals(responseEncoding)) {
+        String expectedEncoding =
+                compact ? HttpMessagePackCodec.ENCODING : HttpBinaryEnvelope.ENCODING;
+        if (responseEncoding != null && !expectedEncoding.equals(responseEncoding)) {
             throw invalidResponse(
                     "FerricStore HTTP response uses an unknown command encoding", response, null);
         }
-        return results.stream().map(this::decodeResult).toList();
+        List<Object> decoded = new ArrayList<>(results.size());
+        for (Object result : results) {
+            decoded.add(decodeResult(result));
+        }
+        return java.util.Collections.unmodifiableList(decoded);
     }
 
     @Override
     public void close() {
         closed.set(true);
         client.set(null);
+        requestSlots.close();
     }
 
-    private Map<String, Object> send(byte[] body, Duration effectiveTimeout) {
-        boolean acquired = false;
+    private CompletableFuture<Map<String, Object>> sendAsync(
+            EncodedBody body, Duration effectiveTimeout) {
         Long timeoutNanos = effectiveTimeout == null ? null : durationToNanos(effectiveTimeout);
         long started = System.nanoTime();
-        try {
-            if (timeoutNanos == null) {
-                requestSlots.acquire();
-                acquired = true;
-            } else {
-                acquired =
-                        requestSlots.tryAcquire(
-                                timeoutNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
-            }
-            if (!acquired) {
-                throw transportFailure(
-                        "FerricStore HTTP request timed out waiting for client capacity",
-                        "transport_timeout",
-                        null);
-            }
-            long elapsed = System.nanoTime() - started;
-            Long remaining = timeoutNanos == null ? null : Math.max(1L, timeoutNanos - elapsed);
-            HttpResponse<byte[]> response =
-                    sendFollowingRedirects(body, started, timeoutNanos, remaining);
-            Map<String, Object> payload =
-                    response.body().length == 0
-                            ? Map.of()
-                            : decodeResponse(response.body(), response.statusCode());
-            if (response.statusCode() != 200) {
-                throw topLevelError(response, payload);
-            }
-            return payload;
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            throw transportFailure(
-                    "FerricStore HTTP request was interrupted; outcome is unknown",
-                    "transport_interrupted",
-                    error);
-        } catch (HttpTimeoutException error) {
-            throw transportFailure(
-                    "FerricStore HTTP request timed out; outcome is unknown",
-                    "transport_timeout",
-                    error);
-        } catch (IOException error) {
-            if (causedBy(error, ResponseTooLargeException.class)) {
-                throw transportFailure(
-                        "FerricStore HTTP response exceeds maxResponseBytes=" + maxResponseBytes,
-                        "response_too_large",
-                        error);
-            }
-            throw transportFailure(
-                    "FerricStore HTTP request failed after submission; outcome is unknown",
-                    "transport_error",
-                    error);
-        } finally {
-            if (acquired) {
-                requestSlots.release();
-            }
-        }
+        CompletableFuture<Map<String, Object>> result = new CompletableFuture<>();
+        CompletableFuture<AsyncPermitPool.Permit> capacity = requestSlots.acquire(timeoutNanos);
+        result.whenComplete(
+                (ignored, failure) -> {
+                    if (result.isCancelled()) {
+                        capacity.cancel(false);
+                    }
+                });
+        capacity.whenComplete(
+                (permit, capacityFailure) -> {
+                    if (capacityFailure != null) {
+                        result.completeExceptionally(mapCapacityFailure(capacityFailure));
+                        return;
+                    }
+                    if (result.isDone()) {
+                        permit.close();
+                        return;
+                    }
+                    sendWithPermit(body, started, timeoutNanos, permit, result);
+                });
+        return result;
     }
 
-    private HttpResponse<byte[]> sendFollowingRedirects(
-            byte[] initialBody, long started, Long timeoutNanos, Long initialRemaining)
-            throws IOException, InterruptedException {
-        URI current = commandEndpoint;
-        String method = "POST";
-        byte[] body = initialBody;
-        Long remaining = initialRemaining;
-        int redirectCount = 0;
-        while (true) {
+    private void sendWithPermit(
+            EncodedBody body,
+            long started,
+            Long timeoutNanos,
+            AsyncPermitPool.Permit permit,
+            CompletableFuture<Map<String, Object>> result) {
+        Long remaining = remainingNanos(started, timeoutNanos);
+        if (remaining != null && remaining <= 0) {
+            permit.close();
+            result.completeExceptionally(
+                    transportFailure(
+                            "FerricStore HTTP request timed out waiting for client capacity",
+                            "transport_timeout",
+                            null));
+            return;
+        }
+        CompletableFuture<HttpResponse<byte[]>> responseFuture =
+                sendFollowingRedirectsAsync(body, started, timeoutNanos, remaining);
+        result.whenComplete(
+                (ignored, failure) -> {
+                    if (result.isCancelled()) {
+                        responseFuture.cancel(true);
+                        permit.close();
+                    }
+                });
+        responseFuture.whenComplete(
+                (response, failure) -> {
+                    permit.close();
+                    if (failure != null) {
+                        result.completeExceptionally(sendFailure(failure));
+                        return;
+                    }
+                    try {
+                        boolean messagePack = messagePackResponse(response);
+                        Map<String, Object> payload =
+                                response.body().length == 0
+                                        ? Map.of()
+                                        : decodeResponse(
+                                                response.body(),
+                                                response.statusCode(),
+                                                messagePack);
+                        if (response.statusCode() != 200) {
+                            throw topLevelError(response, payload);
+                        }
+                        result.complete(payload);
+                    } catch (RuntimeException error) {
+                        result.completeExceptionally(error);
+                    }
+                });
+    }
+
+    private CompletableFuture<HttpResponse<byte[]>> sendFollowingRedirectsAsync(
+            EncodedBody initialBody, long started, Long timeoutNanos, Long initialRemaining) {
+        return sendRedirectAsync(
+                commandEndpoint, "POST", initialBody, started, timeoutNanos, initialRemaining, 0);
+    }
+
+    private CompletableFuture<HttpResponse<byte[]>> sendRedirectAsync(
+            URI current,
+            String method,
+            EncodedBody body,
+            long started,
+            Long timeoutNanos,
+            Long remaining,
+            int redirectCount) {
+        try {
+            String contentType = compact ? HttpMessagePackCodec.CONTENT_TYPE : "application/json";
             HttpRequest.Builder request =
-                    HttpRequest.newBuilder(current).header("Accept", "application/json");
+                    HttpRequest.newBuilder(current).header("Accept", contentType);
             if (remaining != null) {
                 request.timeout(Duration.ofNanos(remaining));
             }
             headers.forEach(request::header);
             if ("POST".equals(method)) {
-                request.header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofByteArray(body));
+                request.header("Content-Type", contentType)
+                        .POST(new ImmutableByteArrayBodyPublisher(body.bytes(), body.length()));
             } else {
                 request.GET();
             }
-            HttpResponse<byte[]> response =
-                    requireOpenClient().send(request.build(), boundedBodyHandler(maxResponseBytes));
+            CompletableFuture<HttpResponse<byte[]>> exchange =
+                    requireOpenClient()
+                            .sendAsync(request.build(), boundedBodyHandler(maxResponseBytes));
+            return composeCancellable(
+                    exchange,
+                    response ->
+                            followRedirectIfNeeded(
+                                    response,
+                                    current,
+                                    method,
+                                    body,
+                                    started,
+                                    timeoutNanos,
+                                    redirectCount));
+        } catch (RuntimeException error) {
+            return AsyncFutures.failed(error);
+        }
+    }
+
+    private CompletableFuture<HttpResponse<byte[]>> followRedirectIfNeeded(
+            HttpResponse<byte[]> response,
+            URI current,
+            String method,
+            EncodedBody body,
+            long started,
+            Long timeoutNanos,
+            int redirectCount) {
+        try {
             String location = response.headers().firstValue("Location").orElse(null);
             if (!isRedirect(response.statusCode()) || location == null) {
-                return response;
+                return CompletableFuture.completedFuture(response);
             }
             URI redirect = resolveRedirect(current, location);
             if (!shouldFollowRedirect(current, redirect)) {
-                return response;
+                return CompletableFuture.completedFuture(response);
             }
             if (redirectCount == 10) {
-                throw new IOException("too many HTTP redirects");
+                return AsyncFutures.failed(new IOException("too many HTTP redirects"));
             }
-            redirectCount++;
-            current = redirect;
+            String nextMethod = method;
+            EncodedBody nextBody = body;
             if (((response.statusCode() == 301 || response.statusCode() == 302)
                             && "POST".equals(method))
                     || (response.statusCode() == 303 && !"HEAD".equals(method))) {
-                method = "GET";
-                body = EMPTY_BODY;
+                nextMethod = "GET";
+                nextBody = EMPTY_BODY;
             }
-            if (timeoutNanos != null) {
-                long elapsed = System.nanoTime() - started;
-                remaining = Math.max(1L, timeoutNanos - elapsed);
-                if (elapsed >= timeoutNanos) {
-                    throw new HttpTimeoutException("FerricStore HTTP redirect deadline exceeded");
-                }
+            Long remaining = remainingNanos(started, timeoutNanos);
+            if (remaining != null && remaining <= 0) {
+                return AsyncFutures.failed(
+                        new HttpTimeoutException("FerricStore HTTP redirect deadline exceeded"));
             }
+            return sendRedirectAsync(
+                    redirect,
+                    nextMethod,
+                    nextBody,
+                    started,
+                    timeoutNanos,
+                    remaining,
+                    redirectCount + 1);
+        } catch (IOException | RuntimeException error) {
+            return AsyncFutures.failed(error);
         }
     }
 
@@ -313,33 +446,25 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     }
 
     private Object decodeResult(Object raw) {
-        Map<String, Object> result;
-        try {
-            result = Resp.map(raw);
-        } catch (RuntimeException error) {
+        if (!(raw instanceof Map<?, ?>)) {
             throw invalidResponse(
-                    "FerricStore HTTP command result is not an object", Map.of(), error);
+                    "FerricStore HTTP command result is not an object", Map.of(), null);
         }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) raw;
         String status = Resp.string(result.get("status"));
         if ("ok".equals(status)) {
-            try {
-                return HttpBinaryEnvelope.decode(result.get("value"));
-            } catch (RuntimeException error) {
-                throw invalidResponse(
-                        "FerricStore HTTP response contains a malformed binary value",
-                        result,
-                        error);
-            }
+            return result.get("value");
         }
         Map<String, Object> detail = mapOrEmpty(result.get("error"));
         String code = textOr(detail.get("code"), "upstream_error");
         String message = textOr(detail.get("message"), code.replace('_', ' '));
-        return throwCommandError(message, code, detail, result);
+        throw commandError(message, code, detail, result);
     }
 
-    private Object throwCommandError(
+    private HttpCommandException commandError(
             String message, String code, Map<String, Object> detail, Map<String, Object> raw) {
-        throw new HttpCommandException(
+        return new HttpCommandException(
                 message,
                 code,
                 booleanValue(detail.get("retryable")),
@@ -488,27 +613,106 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                 new BlockingBudget(Duration.ZERO, true);
     }
 
-    private byte[] encodeRequest(Map<String, Object> envelope) {
-        try {
-            byte[] bytes = JSON.writeValueAsBytes(envelope);
-            if (bytes.length > maxRequestBytes) {
+    private record EncodedBody(byte[] bytes, int length) {}
+
+    private EncodedBody encodeRequest(List<List<Object>> commands) {
+        int initialBytes = initialRequestBytes(commands);
+        try (RequestBuffer buffer = new RequestBuffer(initialBytes);
+                JsonGenerator output = JSON.getFactory().createGenerator(buffer)) {
+            output.writeStartObject();
+            output.writeStringField("encoding", HttpBinaryEnvelope.ENCODING);
+            output.writeArrayFieldStart("commands");
+            for (int index = 0; index < commands.size(); index++) {
+                writeCommand(output, commands.get(index), index);
+            }
+            output.writeEndArray();
+            output.writeEndObject();
+            output.flush();
+            if (buffer.size() > maxRequestBytes) {
                 throw new IllegalArgumentException(
                         "HTTP command request exceeds maxRequestBytes=" + maxRequestBytes);
             }
-            return bytes;
-        } catch (JsonProcessingException error) {
+            return buffer.encodedBody();
+        } catch (IOException error) {
             throw new IllegalArgumentException(
                     "HTTP command request is not JSON-compatible", error);
         }
     }
 
-    private static Object encodeCommand(List<Object> command, int index) {
+    private EncodedBody encodeFlowCreateManyRequest(FlowCreatePipeline.Batch batch) {
+        int initialBytes = boundedInitialBytes(256L + batch.count() * 192L);
+        try (RequestBuffer buffer = new RequestBuffer(initialBytes);
+                JsonGenerator output = JSON.getFactory().createGenerator(buffer)) {
+            output.writeStartObject();
+            output.writeStringField("encoding", HttpBinaryEnvelope.ENCODING);
+            output.writeArrayFieldStart("commands");
+            output.writeStartObject();
+            output.writeStringField("command", FlowCommand.CREATE_MANY.wireName());
+            output.writeNumberField(
+                    "opcode",
+                    FlowCommand.CREATE_MANY
+                            .nativeOpcode()
+                            .orElseThrow(
+                                    () ->
+                                            new IllegalStateException(
+                                                    "FLOW.CREATE_MANY opcode is missing")));
+            output.writeFieldName("payload");
+            HttpJsonFlowCreateCodec.writePayload(output, batch);
+            output.writeEndObject();
+            output.writeEndArray();
+            output.writeEndObject();
+            output.flush();
+            if (buffer.size() > maxRequestBytes) {
+                throw new IllegalArgumentException(
+                        "HTTP command request exceeds maxRequestBytes=" + maxRequestBytes);
+            }
+            return buffer.encodedBody();
+        } catch (IOException error) {
+            throw new IllegalArgumentException(
+                    "HTTP command request is not JSON-compatible", error);
+        }
+    }
+
+    private EncodedBody encodeMessagePackRequest(
+            List<List<Object>> commands, FlowCreatePipeline.Batch flowCreateBatch) {
+        try {
+            byte[] bytes =
+                    HttpMessagePackCodec.encode(
+                            output -> {
+                                output.packMapHeader(2);
+                                output.packString("encoding");
+                                output.packString(HttpMessagePackCodec.ENCODING);
+                                output.packString("commands");
+                                if (flowCreateBatch == null) {
+                                    output.packArrayHeader(commands.size());
+                                    for (int index = 0; index < commands.size(); index++) {
+                                        writeMessagePackCommand(output, commands.get(index), index);
+                                    }
+                                } else {
+                                    output.packArrayHeader(1);
+                                    HttpMessagePackFlowCreateCodec.writeCommand(
+                                            output, flowCreateBatch);
+                                }
+                            });
+            if (bytes.length > maxRequestBytes) {
+                throw new IllegalArgumentException(
+                        "HTTP command request exceeds maxRequestBytes=" + maxRequestBytes);
+            }
+            return new EncodedBody(bytes, bytes.length);
+        } catch (IOException error) {
+            throw new IllegalArgumentException(
+                    "HTTP command request is not MessagePack-compatible", error);
+        }
+    }
+
+    private static void writeMessagePackCommand(
+            org.msgpack.core.MessagePacker output, List<Object> command, int index)
+            throws IOException {
         Objects.requireNonNull(command, "command " + index);
         if (command.isEmpty()) {
             throw new IllegalArgumentException("HTTP command " + index + " cannot be empty");
         }
         String name = commandName(command.get(0), index);
-        String normalized = name.toUpperCase(Locale.ROOT);
         List<Object> effectiveCommand = canonicalCommand(command);
         String effectiveName = commandName(effectiveCommand.get(0), index).toUpperCase(Locale.ROOT);
         if (CONNECTION_AFFINE_COMMANDS.contains(effectiveName)) {
@@ -518,20 +722,115 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                             + "supported through HTTP");
         }
         FlowCommandEncoder.Prepared structured =
-                FlowCommandEncoder.prepare(normalized, command.subList(1, command.size()));
+                FlowCommandEncoder.prepare(
+                        effectiveName, effectiveCommand.subList(1, effectiveCommand.size()));
         if (structured != null) {
-            Map<String, Object> descriptor = new LinkedHashMap<>();
-            descriptor.put("command", structured.command().wireName());
-            descriptor.put("opcode", structured.opcode());
-            descriptor.put("payload", HttpBinaryEnvelope.encode(structured.payload()));
-            return descriptor;
+            writeMessagePackStructuredCommand(output, structured);
+            return;
         }
-        List<Object> encoded = new ArrayList<>(command.size());
-        encoded.add(name);
+        output.packArrayHeader(command.size());
+        output.packString(name);
         for (int argument = 1; argument < command.size(); argument++) {
-            encoded.add(HttpBinaryEnvelope.encode(command.get(argument)));
+            HttpMessagePackCodec.writeValue(output, command.get(argument));
         }
-        return encoded;
+    }
+
+    private static void writeMessagePackStructuredCommand(
+            org.msgpack.core.MessagePacker output, FlowCommandEncoder.Prepared structured)
+            throws IOException {
+        output.packMapHeader(3);
+        output.packString("command");
+        output.packString(structured.command().wireName());
+        output.packString("opcode");
+        output.packInt(structured.opcode());
+        output.packString("payload");
+        HttpMessagePackCodec.writeValue(output, structured.payload());
+    }
+
+    private static String responseToken(Object value) {
+        if (value instanceof byte[] bytes) {
+            return new String(bytes, StandardCharsets.UTF_8).toLowerCase(Locale.ROOT);
+        }
+        return String.valueOf(value).toLowerCase(Locale.ROOT);
+    }
+
+    private int initialRequestBytes(List<List<Object>> commands) {
+        long estimate = 64L + commands.size() * 24L;
+        for (List<Object> command : commands) {
+            if (command == null) {
+                continue;
+            }
+            for (Object argument : command) {
+                estimate += 24L + estimatedJsonBytes(argument);
+                if (estimate >= 1_048_576L) {
+                    return boundedInitialBytes(estimate);
+                }
+            }
+        }
+        return boundedInitialBytes(estimate);
+    }
+
+    private static long estimatedJsonBytes(Object value) {
+        if (value instanceof byte[] bytes) {
+            return 32L + (bytes.length + 2L) / 3L * 4L;
+        }
+        if (value instanceof ByteBuffer buffer) {
+            return 32L + (buffer.remaining() + 2L) / 3L * 4L;
+        }
+        if (value instanceof String text) {
+            return 2L + text.length();
+        }
+        if (value instanceof Number) {
+            return 32L;
+        }
+        if (value instanceof Boolean) {
+            return 5L;
+        }
+        return value == null ? 4L : 64L;
+    }
+
+    private int boundedInitialBytes(long estimate) {
+        return (int) Math.min(maxRequestBytes, Math.min(1_048_576L, estimate));
+    }
+
+    private static void writeCommand(JsonGenerator output, List<Object> command, int index)
+            throws IOException {
+        Objects.requireNonNull(command, "command " + index);
+        if (command.isEmpty()) {
+            throw new IllegalArgumentException("HTTP command " + index + " cannot be empty");
+        }
+        String name = commandName(command.get(0), index);
+        List<Object> effectiveCommand = canonicalCommand(command);
+        String effectiveName = commandName(effectiveCommand.get(0), index).toUpperCase(Locale.ROOT);
+        if (CONNECTION_AFFINE_COMMANDS.contains(effectiveName)) {
+            throw new IllegalArgumentException(
+                    effectiveName
+                            + " requires a connection-affine native TCP transport and is not "
+                            + "supported through HTTP");
+        }
+        FlowCommandEncoder.Prepared structured =
+                FlowCommandEncoder.prepare(
+                        effectiveName, effectiveCommand.subList(1, effectiveCommand.size()));
+        if (structured != null) {
+            writeStructuredCommand(output, structured);
+            return;
+        }
+        output.writeStartArray();
+        output.writeString(name);
+        for (int argument = 1; argument < command.size(); argument++) {
+            HttpBinaryEnvelope.writeJson(output, command.get(argument));
+        }
+        output.writeEndArray();
+    }
+
+    private static void writeStructuredCommand(
+            JsonGenerator output, FlowCommandEncoder.Prepared structured) throws IOException {
+        output.writeStartObject();
+        output.writeStringField("command", structured.command().wireName());
+        output.writeNumberField("opcode", structured.opcode());
+        output.writeFieldName("payload");
+        HttpBinaryEnvelope.writeJson(output, structured.payload());
+        output.writeEndObject();
     }
 
     private static List<Object> canonicalCommand(List<Object> original) {
@@ -652,12 +951,26 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         requireOpenClient();
     }
 
-    private static Map<String, Object> decodeResponse(byte[] body, int statusCode) {
+    private static boolean messagePackResponse(HttpResponse<?> response) {
+        String contentType = response.headers().firstValue("Content-Type").orElse("");
+        int parameter = contentType.indexOf(';');
+        String mediaType = parameter < 0 ? contentType : contentType.substring(0, parameter);
+        return HttpMessagePackCodec.CONTENT_TYPE.equalsIgnoreCase(mediaType.trim());
+    }
+
+    private static Map<String, Object> decodeResponse(
+            byte[] body, int statusCode, boolean messagePack) {
         try {
-            return JSON.readValue(body, JSON_OBJECT);
+            return messagePack
+                    ? HttpMessagePackCodec.decodeResponse(body)
+                    : HttpResponseDecoder.decode(body);
+        } catch (HttpResponseDecoder.MalformedEnvelopeException error) {
+            throw invalidResponse(
+                    "FerricStore HTTP response contains a malformed binary value", Map.of(), error);
         } catch (IOException error) {
             throw new HttpTransportException(
-                    "FerricStore HTTP endpoint returned malformed JSON",
+                    "FerricStore HTTP endpoint returned malformed "
+                            + (messagePack ? "MessagePack" : "JSON"),
                     statusCode,
                     "invalid_response",
                     false,
@@ -691,6 +1004,110 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private static HttpTransportException transportFailure(
             String message, String code, Throwable cause) {
         return new HttpTransportException(message, 0, code, false, false, null, Map.of(), cause);
+    }
+
+    private RuntimeException mapCapacityFailure(Throwable failure) {
+        Throwable error = AsyncFutures.unwrap(failure);
+        if (error instanceof TimeoutException) {
+            return transportFailure(
+                    "FerricStore HTTP request timed out waiting for client capacity",
+                    "transport_timeout",
+                    error);
+        }
+        if (error instanceof RejectedExecutionException) {
+            return transportFailure(
+                    "FerricStore HTTP client pending request limit exceeded",
+                    "client_overloaded",
+                    error);
+        }
+        if (error instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return transportFailure(
+                "FerricStore HTTP request failed while waiting for client capacity",
+                "transport_error",
+                error);
+    }
+
+    private static <S, T> CompletableFuture<T> composeCancellable(
+            CompletableFuture<S> source,
+            Function<? super S, ? extends CompletableFuture<T>> continuation) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        AtomicReference<CompletableFuture<T>> next = new AtomicReference<>();
+        result.whenComplete(
+                (ignored, failure) -> {
+                    if (result.isCancelled()) {
+                        source.cancel(true);
+                        CompletableFuture<T> current = next.get();
+                        if (current != null) {
+                            current.cancel(true);
+                        }
+                    }
+                });
+        source.whenComplete(
+                (value, failure) -> {
+                    if (failure != null) {
+                        result.completeExceptionally(AsyncFutures.unwrap(failure));
+                        return;
+                    }
+                    if (result.isDone()) {
+                        return;
+                    }
+                    CompletableFuture<T> current;
+                    try {
+                        current = Objects.requireNonNull(continuation.apply(value));
+                    } catch (RuntimeException error) {
+                        result.completeExceptionally(error);
+                        return;
+                    }
+                    next.set(current);
+                    if (result.isCancelled()) {
+                        current.cancel(true);
+                        return;
+                    }
+                    current.whenComplete(
+                            (continuedValue, continuedFailure) -> {
+                                if (continuedFailure != null) {
+                                    result.completeExceptionally(
+                                            AsyncFutures.unwrap(continuedFailure));
+                                } else {
+                                    result.complete(continuedValue);
+                                }
+                            });
+                });
+        return result;
+    }
+
+    private RuntimeException sendFailure(Throwable failure) {
+        Throwable error = AsyncFutures.unwrap(failure);
+        if (error instanceof HttpTimeoutException || error instanceof TimeoutException) {
+            return transportFailure(
+                    "FerricStore HTTP request timed out; outcome is unknown",
+                    "transport_timeout",
+                    error);
+        }
+        if (causedBy(error, ResponseTooLargeException.class)) {
+            return transportFailure(
+                    "FerricStore HTTP response exceeds maxResponseBytes=" + maxResponseBytes,
+                    "response_too_large",
+                    error);
+        }
+        if (error instanceof HttpTransportException transport) {
+            return transport;
+        }
+        if (error instanceof IOException) {
+            return transportFailure(
+                    "FerricStore HTTP request failed after submission; outcome is unknown",
+                    "transport_error",
+                    error);
+        }
+        if (error instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return transportFailure(
+                "FerricStore HTTP request failed after submission; outcome is unknown",
+                "transport_error",
+                error);
     }
 
     private static HttpTransportException invalidResponse(
@@ -742,6 +1159,14 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         }
     }
 
+    private static Long remainingNanos(long started, Long timeoutNanos) {
+        if (timeoutNanos == null) {
+            return null;
+        }
+        long elapsed = System.nanoTime() - started;
+        return elapsed >= timeoutNanos ? 0L : timeoutNanos - elapsed;
+    }
+
     private static boolean causedBy(Throwable error, Class<? extends Throwable> type) {
         Throwable current = error;
         while (current != null) {
@@ -755,11 +1180,23 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
 
     private static HttpResponse.BodyHandler<byte[]> boundedBodyHandler(int maxBytes) {
         return responseInfo -> {
-            boolean declaredTooLarge =
-                    responseInfo.headers().firstValueAsLong("Content-Length").stream()
-                            .anyMatch(length -> length > maxBytes);
-            return new BoundedBodySubscriber(maxBytes, declaredTooLarge);
+            long declaredBytes =
+                    responseInfo.headers().firstValueAsLong("Content-Length").orElse(-1L);
+            boolean declaredTooLarge = declaredBytes > maxBytes;
+            int expectedBytes =
+                    declaredBytes < 0 || declaredTooLarge ? -1 : Math.toIntExact(declaredBytes);
+            return new BoundedBodySubscriber(maxBytes, declaredTooLarge, expectedBytes);
         };
+    }
+
+    private static final class RequestBuffer extends ByteArrayOutputStream {
+        private RequestBuffer(int initialBytes) {
+            super(initialBytes);
+        }
+
+        private EncodedBody encodedBody() {
+            return new EncodedBody(buf, count);
+        }
     }
 
     private static final class BoundedBodySubscriber
@@ -767,12 +1204,16 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         private final int maxBytes;
         private final boolean reject;
         private final CompletableFuture<byte[]> body = new CompletableFuture<>();
-        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        private final List<byte[]> chunks;
+        private final byte[] expectedBody;
         private Flow.Subscription subscription;
+        private int receivedBytes;
 
-        private BoundedBodySubscriber(int maxBytes, boolean reject) {
+        private BoundedBodySubscriber(int maxBytes, boolean reject, int expectedBytes) {
             this.maxBytes = maxBytes;
             this.reject = reject;
+            expectedBody = expectedBytes < 0 ? null : new byte[expectedBytes];
+            chunks = expectedBody == null ? new ArrayList<>() : List.of();
         }
 
         @Override
@@ -801,14 +1242,26 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                 return;
             }
             for (ByteBuffer buffer : buffers) {
-                if (buffer.remaining() > maxBytes - output.size()) {
+                int chunkBytes = buffer.remaining();
+                if (chunkBytes > maxBytes - receivedBytes) {
                     activeSubscription.cancel();
                     body.completeExceptionally(new ResponseTooLargeException());
                     return;
                 }
-                byte[] chunk = new byte[buffer.remaining()];
-                buffer.get(chunk);
-                output.writeBytes(chunk);
+                if (expectedBody != null && chunkBytes > expectedBody.length - receivedBytes) {
+                    activeSubscription.cancel();
+                    body.completeExceptionally(
+                            new IOException("HTTP response exceeds its Content-Length"));
+                    return;
+                }
+                if (expectedBody != null) {
+                    buffer.get(expectedBody, receivedBytes, chunkBytes);
+                } else {
+                    byte[] chunk = new byte[chunkBytes];
+                    buffer.get(chunk);
+                    chunks.add(chunk);
+                }
+                receivedBytes += chunkBytes;
             }
             activeSubscription.request(1);
         }
@@ -820,7 +1273,30 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
 
         @Override
         public void onComplete() {
-            body.complete(output.toByteArray());
+            if (expectedBody != null) {
+                if (receivedBytes != expectedBody.length) {
+                    body.completeExceptionally(
+                            new IOException("HTTP response ended before Content-Length bytes"));
+                } else {
+                    body.complete(expectedBody);
+                }
+                return;
+            }
+            if (chunks.isEmpty()) {
+                body.complete(new byte[0]);
+                return;
+            }
+            if (chunks.size() == 1) {
+                body.complete(chunks.get(0));
+                return;
+            }
+            byte[] result = new byte[receivedBytes];
+            int offset = 0;
+            for (byte[] chunk : chunks) {
+                System.arraycopy(chunk, 0, result, offset, chunk.length);
+                offset += chunk.length;
+            }
+            body.complete(result);
         }
     }
 

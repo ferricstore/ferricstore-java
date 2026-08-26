@@ -50,7 +50,15 @@ final class IntegrationTestEnvironment {
         HttpTransportOptions.Builder options =
                 HttpTransportOptions.builder()
                         .username(requiredEnvironment("FERRICSTORE_USERNAME"))
-                        .password(requiredEnvironment("FERRICSTORE_PASSWORD"));
+                        .password(requiredEnvironment("FERRICSTORE_PASSWORD"))
+                        .maxConcurrentRequests(32)
+                        .compact(
+                                "msgpack"
+                                        .equals(
+                                                System.getenv()
+                                                        .getOrDefault(
+                                                                "FERRICSTORE_HTTP_FORMAT",
+                                                                "json")));
         if (url.startsWith("http://")) {
             options.allowInsecureBasicAuthentication(true);
         }
