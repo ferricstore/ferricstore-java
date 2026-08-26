@@ -3,7 +3,7 @@ set -euo pipefail
 
 bundle_path="${1:-target/central-publishing/central-bundle.zip}"
 expected_group_path="io/github/ferricstore"
-expected_version="0.1.3"
+expected_version="0.1.4"
 expected_artifacts=(
   ferricstore-java-parent
   ferricstore-java

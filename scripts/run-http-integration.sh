@@ -90,4 +90,4 @@ env \
   FERRICSTORE_CA_FILE="$tls_dir/ca.pem" \
   FERRICSTORE_HTTP_FORMAT="$format" \
   mvn -B -pl ferricstore-java -am \
-    -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test
+    -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test

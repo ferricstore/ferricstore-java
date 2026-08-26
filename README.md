@@ -23,7 +23,7 @@ Artifacts are published under the FerricStore GitHub organization namespace. Jav
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
-  <version>0.1.3</version>
+  <version>0.1.4</version>
 </dependency>
 ```
 
@@ -33,7 +33,7 @@ Spring Boot:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
-  <version>0.1.3</version>
+  <version>0.1.4</version>
 </dependency>
 ```
 
@@ -43,7 +43,7 @@ Optional Spring Statemachine adapter:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
-  <version>0.1.3</version>
+  <version>0.1.4</version>
 </dependency>
 ```
 
@@ -268,6 +268,11 @@ for (ClaimedItem job : compactJobs) {
 
 Use `claimDue` when handlers need hydrated workflow records and payloads. Use `claimJobs` when a worker only needs id, partition, lease token, and fencing token for a write such as complete, retry, or fail.
 
+Named values are supported by create, transition, complete, fail, cancel, their supported
+batch variants, and child creation. FerricStore OSS retry and retry-many operations do not mutate
+named values; the Java client rejects retry value additions, references, drops, and overrides
+before sending a request. Retry attribute and state-metadata mutations remain supported.
+
 ## FerricStore KV And Data Structures
 
 The same client exposes typed helpers for FerricStore's Redis-compatible store commands:
@@ -328,7 +333,12 @@ Compile-checked examples live under `ferricstore-examples/src/main/java/com/ferr
 mise install
 mise run test
 mise run test:java17
+mise run coverage
 ```
+
+Coverage is enforced during `verify`: the core SDK must retain at least 80%
+line and 60% branch coverage. HTML reports are generated under each library
+module's `target/site/jacoco/` directory.
 
 Run integration tests:
 

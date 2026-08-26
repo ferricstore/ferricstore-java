@@ -33,7 +33,7 @@ jobs:
       - run: scripts/wait-for-ferricstore.sh
       - run: >-
           mvn -B -pl ferricstore-java -am
-          -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test
+          -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test
         env:
           FERRICSTORE_INTEGRATION: "1"
       - if: always()

@@ -20,6 +20,8 @@ final class FlowManyCommandEncoder {
     private static final Set<String> SCALAR_OPTIONS =
             Set.of(
                     "RESULT",
+                    "ERROR",
+                    "REASON",
                     "PAYLOAD",
                     "TTL",
                     "NOW",
@@ -38,10 +40,20 @@ final class FlowManyCommandEncoder {
         if (command == FlowCommand.TRANSITION_MANY) {
             return transitionMany(command, arguments);
         }
+        if (command == FlowCommand.FAIL_MANY) {
+            return claimedMany(command, arguments);
+        }
+        if (command == FlowCommand.CANCEL_MANY) {
+            return cancelMany(command, arguments);
+        }
         return null;
     }
 
     private static Prepared completeMany(FlowCommand command, List<Object> arguments) {
+        return claimedMany(command, arguments);
+    }
+
+    private static Prepared claimedMany(FlowCommand command, List<Object> arguments) {
         if (arguments == null || arguments.size() < 3) {
             return null;
         }
@@ -55,6 +67,27 @@ final class FlowManyCommandEncoder {
             return null;
         }
         List<Object> items = claimedItems(arguments.subList(itemsAt, arguments.size()), mixed);
+        if (items == null || items.isEmpty()) {
+            return null;
+        }
+        payload.put("items", items);
+        return prepared(command, payload);
+    }
+
+    private static Prepared cancelMany(FlowCommand command, List<Object> arguments) {
+        if (arguments == null || arguments.size() < 3) {
+            return null;
+        }
+        boolean mixed = mixed(arguments.get(0));
+        Map<String, Object> payload = new LinkedHashMap<>();
+        if (!mixed) {
+            payload.put("partition_key", arguments.get(0));
+        }
+        int itemsAt = parseOptions(arguments, 1, payload);
+        if (itemsAt < 0) {
+            return null;
+        }
+        List<Object> items = fencedItems(arguments.subList(itemsAt, arguments.size()), mixed);
         if (items == null || items.isEmpty()) {
             return null;
         }
@@ -153,6 +186,18 @@ final class FlowManyCommandEncoder {
 
     private static List<Object> claimedItems(List<Object> values, boolean mixed) {
         int width = mixed ? 4 : 3;
+        if (values.isEmpty() || values.size() % width != 0) {
+            return null;
+        }
+        List<Object> items = new ArrayList<>(values.size() / width);
+        for (int index = 0; index < values.size(); index += width) {
+            items.add(List.copyOf(values.subList(index, index + width)));
+        }
+        return List.copyOf(items);
+    }
+
+    private static List<Object> fencedItems(List<Object> values, boolean mixed) {
+        int width = mixed ? 3 : 2;
         if (values.isEmpty() || values.size() % width != 0) {
             return null;
         }

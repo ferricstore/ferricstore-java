@@ -12,6 +12,12 @@ import java.util.Set;
 final class FlowCommandEncoder {
     private static final Set<FlowCommand> STRUCTURED_COMMANDS =
             Set.of(
+                    FlowCommand.CREATE,
+                    FlowCommand.COMPLETE,
+                    FlowCommand.TRANSITION,
+                    FlowCommand.FAIL,
+                    FlowCommand.CANCEL,
+                    FlowCommand.VALUE_PUT,
                     FlowCommand.VALUE_MGET,
                     FlowCommand.COMPLETE_MANY,
                     FlowCommand.TRANSITION_MANY,
@@ -107,7 +113,20 @@ final class FlowCommandEncoder {
 
     static Prepared prepare(String normalizedName, List<Object> arguments) {
         FlowCommand command = FlowCommand.fromWireName(normalizedName).orElse(null);
-        if (command == null || !STRUCTURED_COMMANDS.contains(command)) {
+        if (command == null) {
+            return null;
+        }
+        FlowManyCommandEncoder.Prepared many =
+                FlowManyCommandEncoder.tryPrepare(normalizedName, arguments);
+        if (many != null) {
+            return new Prepared(command, many.opcode(), many.payload());
+        }
+        FlowItemCommandEncoder.Prepared itemCommand =
+                FlowItemCommandEncoder.tryPrepare(normalizedName, arguments);
+        if (itemCommand != null) {
+            return new Prepared(command, itemCommand.opcode(), itemCommand.payload());
+        }
+        if (!STRUCTURED_COMMANDS.contains(command)) {
             return null;
         }
         int opcode =
@@ -119,12 +138,18 @@ final class FlowCommandEncoder {
                                                         + " has no native structured opcode"));
         List<Object> args = List.copyOf(arguments);
         Map<String, Object> payload;
-        if (command == FlowCommand.COMPLETE_MANY || command == FlowCommand.TRANSITION_MANY) {
-            FlowManyCommandEncoder.Prepared many =
-                    FlowManyCommandEncoder.tryPrepare(normalizedName, arguments);
-            return many == null ? null : new Prepared(command, many.opcode(), many.payload());
-        } else if (command == FlowCommand.VALUE_MGET) {
+        if (command == FlowCommand.VALUE_MGET) {
             payload = valueMget(args);
+        } else if (command == FlowCommand.CREATE) {
+            payload = positional(command, args, List.of("id"));
+        } else if (command == FlowCommand.VALUE_PUT) {
+            payload = positional(command, args, List.of("value"));
+        } else if (command == FlowCommand.TRANSITION) {
+            payload = positional(command, args, List.of("id", "from_state", "to_state"));
+        } else if (command == FlowCommand.COMPLETE || command == FlowCommand.FAIL) {
+            payload = positional(command, args, List.of("id", "lease_token"));
+        } else if (command == FlowCommand.CANCEL) {
+            payload = positional(command, args, List.of("id"));
         } else if (command == FlowCommand.STEP_CONTINUE) {
             payload =
                     positional(
@@ -139,6 +164,10 @@ final class FlowCommandEncoder {
             payload = options(command, args, 0);
         }
         return new Prepared(command, opcode, Map.copyOf(payload));
+    }
+
+    static Map<String, Object> optionPayload(FlowCommand command, List<Object> arguments) {
+        return options(command, List.copyOf(arguments), 0);
     }
 
     private static Map<String, Object> valueMget(List<Object> args) {

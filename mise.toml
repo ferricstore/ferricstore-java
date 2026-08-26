@@ -14,17 +14,21 @@ run = "mise exec java@temurin-17 -- mvn -B clean test"
 description = "Run formatting, static analysis, and tests"
 run = "mvn -B -Pquality verify"
 
+[tasks.coverage]
+description = "Run tests, enforce coverage gates, and generate JaCoCo HTML reports"
+run = "mvn -B verify"
+
 [tasks.integration]
 description = "Run native-protocol command and concurrency integration tests on Java 21"
-run = "FERRICSTORE_INTEGRATION=1 mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
+run = "FERRICSTORE_INTEGRATION=1 mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
 
 [tasks."integration:java17"]
 description = "Run native-protocol command and concurrency integration tests on Java 17"
-run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-17 -- mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
+run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-17 -- mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
 
 [tasks."integration:java21"]
 description = "Run native-protocol command and concurrency integration tests on Java 21"
-run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-21 -- mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
+run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-21 -- mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
 
 [tasks."integration:http"]
 description = "Run authenticated TLS HTTP command and concurrency integration tests on Java 21"
