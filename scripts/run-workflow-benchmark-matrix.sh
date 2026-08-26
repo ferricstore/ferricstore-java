@@ -4,7 +4,7 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_dir"
 
-image="${FERRICSTORE_IMAGE:-quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5}"
+image="${FERRICSTORE_IMAGE:-quay.io/ferricstore/ferricstore:0.11.12@sha256:3aef2c4200dff987a5797c08548582136d827838ccc0286aef5a00e8f4f6aa62}"
 scenario_list="${FERRICSTORE_BENCHMARK_SCENARIOS:-java21-native,java17-native,java21-http,java17-http,java21-http-msgpack,java17-http-msgpack}"
 output_dir="${FERRICSTORE_BENCHMARK_OUTPUT_DIR:-$repo_dir/target/workflow-benchmark-$(date -u +%Y%m%dT%H%M%SZ)}"
 samples="${FERRICSTORE_BENCHMARK_SAMPLES:-5}"
