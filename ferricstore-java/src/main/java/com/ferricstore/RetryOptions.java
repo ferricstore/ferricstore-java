@@ -74,11 +74,17 @@ public record RetryOptions(
             return this;
         }
 
+        /**
+         * Retained for source compatibility. FerricStore OSS retry semantics do not support
+         * named-value mutations, so passing values to {@link FerricStoreClient#retry(RetryOptions)}
+         * fails before a request is sent.
+         */
         public Builder value(String name, Object value) {
             values.put(name, value);
             return this;
         }
 
+        /** See {@link #value(String, Object)}. */
         public Builder valueRef(String name, String value) {
             valueRefs.put(name, value);
             return this;

@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.ferricstore</groupId>
     <artifactId>ferricstore-java-parent</artifactId>
-    <version>0.1.3</version>
+    <version>0.1.4</version>
   </parent>
 
   <artifactId>ferricstore-spring-boot-starter</artifactId>
@@ -15,6 +15,8 @@
   <description>Spring Boot auto-configuration for the FerricStore Java SDK.</description>
 
   <properties>
+    <jacoco.line.minimum>0.75</jacoco.line.minimum>
+    <jacoco.branch.minimum>0.50</jacoco.branch.minimum>
     <spotbugs.skip>false</spotbugs.skip>
   </properties>
 

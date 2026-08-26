@@ -366,9 +366,10 @@ public final class FerricStoreClient implements AutoCloseable {
         appendEntries(cmd, "ATTRIBUTE", options.attributes());
         appendEntries(cmd, "STATE_META", options.stateMeta());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        appendReturnRecord(cmd, options.returnRecord());
         Object response = command(cmd);
-        return options.returnRecord() ? Resp.optionalRecord(response, codec) : response;
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
     }
 
     public Object enqueue(String id, CreateOptions options) {
@@ -634,9 +635,10 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "PRIORITY", options.priority());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        appendReturnRecord(cmd, options.returnRecord());
         Object response = command(cmd);
-        return options.returnRecord() ? Resp.optionalRecord(response, codec) : response;
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
     }
 
     public Object complete(CompleteOptions options) {
@@ -655,12 +657,15 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "TTL", options.ttlMs());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        appendReturnRecord(cmd, options.returnRecord());
         Object response = command(cmd);
-        return options.returnRecord() ? Resp.optionalRecord(response, codec) : response;
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
     }
 
     public Object retry(RetryOptions options) {
+        requireRetryNamedValuesUnsupported(
+                "FLOW.RETRY", options.values(), options.valueRefs(), options.mutationFields());
         List<Object> cmd =
                 args(
                         "FLOW.RETRY",
@@ -676,9 +681,10 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "RUN_AT", options.runAtMs() == 0 ? null : options.runAtMs());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        appendReturnRecord(cmd, options.returnRecord());
         Object response = command(cmd);
-        return options.returnRecord() ? Resp.optionalRecord(response, codec) : response;
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
     }
 
     public Object fail(FailOptions options) {
@@ -697,9 +703,10 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "TTL", options.ttlMs());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        appendReturnRecord(cmd, options.returnRecord());
         Object response = command(cmd);
-        return options.returnRecord() ? Resp.optionalRecord(response, codec) : response;
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
     }
 
     public Object cancel(CancelOptions options) {
@@ -717,9 +724,10 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "TTL", options.ttlMs());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        appendReturnRecord(cmd, options.returnRecord());
         Object response = command(cmd);
-        return options.returnRecord() ? Resp.optionalRecord(response, codec) : response;
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
     }
 
     public Object completeMany(CompleteManyOptions options) {
@@ -772,6 +780,8 @@ public final class FerricStoreClient implements AutoCloseable {
         if (options.items().isEmpty()) {
             return List.of();
         }
+        requireRetryNamedValuesUnsupported(
+                "FLOW.RETRY_MANY", options.values(), options.valueRefs(), options.mutationFields());
         List<Object> cmd =
                 args(
                         "FLOW.RETRY_MANY",
@@ -968,7 +978,16 @@ public final class FerricStoreClient implements AutoCloseable {
                 options.children().stream()
                         .anyMatch(
                                 child -> !child.values().isEmpty() || !child.valueRefs().isEmpty());
-        boolean mapped = options.children().stream().anyMatch(child -> child.maxActiveMs() != null);
+        if (mixed
+                && options.children().stream()
+                        .anyMatch(
+                                child ->
+                                        child.partitionKey() == null
+                                                || child.partitionKey().isEmpty())) {
+            throw new IllegalArgumentException("mixed spawnChildren items require partition key");
+        }
+        boolean mapped =
+                mixed || options.children().stream().anyMatch(child -> child.maxActiveMs() != null);
         if (mapped) {
             cmd.add("ITEMS_MAPS");
             cmd.add(options.children().size());
@@ -979,10 +998,6 @@ public final class FerricStoreClient implements AutoCloseable {
             cmd.add("ITEMS_EXT");
             cmd.add(options.children().size());
             for (ChildSpec child : options.children()) {
-                if (mixed && (child.partitionKey() == null || child.partitionKey().isEmpty())) {
-                    throw new IllegalArgumentException(
-                            "mixed spawnChildren items require partition key");
-                }
                 cmd.add(child.id());
                 cmd.add(child.partitionKey() == null ? "-" : child.partitionKey());
                 cmd.add(child.type());
@@ -995,18 +1010,8 @@ public final class FerricStoreClient implements AutoCloseable {
         } else {
             appendNamedValues(cmd, codec, options.values(), options.valueRefs());
             cmd.add("ITEMS");
-            if (mixed) {
-                cmd.add("MIXED");
-            }
             for (ChildSpec child : options.children()) {
                 cmd.add(child.id());
-                if (mixed) {
-                    if (child.partitionKey() == null || child.partitionKey().isEmpty()) {
-                        throw new IllegalArgumentException(
-                                "mixed spawnChildren items require partition key");
-                    }
-                    cmd.add(child.partitionKey());
-                }
                 cmd.add(child.type());
                 cmd.add(codec.encode(child.payload()));
             }
@@ -1457,6 +1462,22 @@ public final class FerricStoreClient implements AutoCloseable {
         mapped.put("values", encoded);
     }
 
+    private static void requireRetryNamedValuesUnsupported(
+            String command,
+            Map<String, ?> values,
+            Map<String, String> valueRefs,
+            FlowMutationFields mutationFields) {
+        FlowMutationFields fields =
+                mutationFields == null ? FlowMutationFields.empty() : mutationFields;
+        if (!values.isEmpty()
+                || !valueRefs.isEmpty()
+                || !fields.dropValues().isEmpty()
+                || !fields.overrideValues().isEmpty()) {
+            throw new UnsupportedOperationException(
+                    command + " does not support named-value mutations in FerricStore OSS");
+        }
+    }
+
     private void appendClaimedItems(
             List<Object> cmd, String partitionKey, List<ClaimedItem> items) {
         cmd.add("ITEMS");
@@ -1559,11 +1580,19 @@ public final class FerricStoreClient implements AutoCloseable {
         return merged;
     }
 
-    private static void appendReturnRecord(List<Object> cmd, boolean returnRecord) {
-        if (returnRecord) {
-            cmd.add("RETURN");
-            cmd.add("RECORD");
+    private FlowRecord recordOrGet(Object response, String id, String partitionKey) {
+        if (response instanceof Map<?, ?> || response instanceof List<?>) {
+            FlowRecord returned = Resp.optionalRecord(response, codec);
+            if (returned != null) {
+                return returned;
+            }
         }
+        FlowRecord stored = get(id, partitionKey);
+        if (stored == null) {
+            throw new FerricStoreException(
+                    "FLOW command succeeded but record " + id + " was not found");
+        }
+        return stored;
     }
 
     private static List<Object> prefix(String command, Object[] rest) {

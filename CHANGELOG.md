@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.4 - 2026-08-27
+
+- Cover the complete typed FerricStore and FerricFlow command API with rich-argument
+  integration tests over native TCP and authenticated TLS HTTP on Java 17 and 21.
+- Route named values, extended and mapped batch items, and all supported terminal
+  Flow mutations through the OSS typed payload contract.
+- Preserve native multiplexing while bounding pipeline memory and sequencing oversized
+  pipeline batches, with deterministic cancellation and response-decoding behavior.
+- Correct `returnRecord` compatibility for OSS servers and reject unsupported retry
+  named-value mutations locally without removing the existing builder API.
+
 ## 0.1.3 - 2026-08-26
 
 - Bound HTTP capacity waiters and native multiplexed requests with configurable

@@ -10,6 +10,7 @@ Artifacts target Java 17. Local quality tooling uses Java 21 because current Che
 mise install
 mise run test
 mise run test:java17
+mise run coverage
 ```
 
 The Maven reactor builds:
@@ -26,7 +27,7 @@ For examples and integration testing:
 ```bash
 docker compose up -d ferricstore
 scripts/wait-for-ferricstore.sh
-FERRICSTORE_INTEGRATION=1 mise exec -- mvn -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test
+FERRICSTORE_INTEGRATION=1 mise exec -- mvn -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test
 docker compose down -v
 ```
 
@@ -58,6 +59,12 @@ The `quality` profile fails on:
 - Checkstyle source hygiene violations
 - PMD correctness, security, performance, and concurrency violations
 - SpotBugs findings at `Max` effort and `Low` threshold
+- JaCoCo coverage below 80% lines / 60% branches in the core SDK, 90% / 80% in
+  the statemachine adapter, or 75% / 50% in the Spring Boot starter
+
+`mise run coverage` writes each module's browsable report to
+`MODULE/target/site/jacoco/index.html`. Compile-checked examples and benchmark
+launchers are excluded from the gate.
 
 ## Pull Request Checklist
 

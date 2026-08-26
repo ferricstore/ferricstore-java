@@ -12,6 +12,10 @@ final class HttpIntegrationReleaseContractTest {
     private static final String RELEASE_IMAGE =
             "quay.io/ferricstore/ferricstore:0.11.12@sha256:"
                     + "3aef2c4200dff987a5797c08548582136d827838ccc0286aef5a00e8f4f6aa62";
+    private static final String INTEGRATION_TESTS =
+            "-Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,"
+                    + "FerricStoreFlowArgumentsIntegrationTest,"
+                    + "FerricStoreConcurrencyIntegrationTest";
 
     @Test
     void ciReleaseAndDocumentationRequireAuthenticatedTlsHttpIntegration() throws IOException {
@@ -35,6 +39,7 @@ final class HttpIntegrationReleaseContractTest {
                     "ACL authorization probe unexpectedly allowed SET",
                     "unauthenticated HTTP request returned",
                     "FerricStoreIntegrationTest",
+                    "FerricStoreFlowArgumentsIntegrationTest",
                     "FerricStoreConcurrencyIntegrationTest"
                 }) {
             assertTrue(runner.contains(required), () -> "runner is missing " + required);
@@ -48,6 +53,10 @@ final class HttpIntegrationReleaseContractTest {
             assertTrue(contents.contains(RELEASE_IMAGE));
             assertImmutableFerricStoreImages(contents);
         }
+
+        String compose = repositoryFile("docker-compose.yml");
+        assertTrue(compose.contains(RELEASE_IMAGE));
+        assertImmutableFerricStoreImages(compose);
 
         String readme = repositoryFile("README.md");
         assertTrue(readme.contains("run-http-integration.sh"));
@@ -105,9 +114,7 @@ final class HttpIntegrationReleaseContractTest {
         assertTrue(
                 releaseValidation.contains(
                         "if: matrix.java-version == 21\n        run: mvn -B -P quality verify"));
-        assertTrue(
-                releaseValidation.contains(
-                        "-Dtest=FerricStoreIntegrationTest,FerricStoreConcurrencyIntegrationTest"));
+        assertTrue(releaseValidation.contains(INTEGRATION_TESTS));
         assertTrue(releaseValidation.contains("scripts/run-http-integration.sh"));
     }
 

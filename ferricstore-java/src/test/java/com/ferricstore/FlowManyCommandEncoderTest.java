@@ -1,5 +1,6 @@
 package com.ferricstore;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -96,6 +97,44 @@ final class FlowManyCommandEncoderTest {
         assertEquals(List.of("scratch"), prepared.payload().get("drop_values"));
         assertEquals(Map.of("output", "ref-1"), prepared.payload().get("value_refs"));
         assertEquals(List.of(List.of("a", "lease-a", 1L)), prepared.payload().get("items"));
+    }
+
+    @Test
+    void preparesFailAndCancelManyNamedValueMutations() {
+        FlowManyCommandEncoder.Prepared fail =
+                FlowManyCommandEncoder.tryPrepare(
+                        "FLOW.FAIL_MANY",
+                        List.of(
+                                "tenant-a",
+                                "ERROR",
+                                new byte[] {1},
+                                "VALUE",
+                                "failure-detail",
+                                new byte[] {2},
+                                "ITEMS",
+                                "a",
+                                "lease-a",
+                                1L));
+        FlowManyCommandEncoder.Prepared cancel =
+                FlowManyCommandEncoder.tryPrepare(
+                        "FLOW.CANCEL_MANY",
+                        List.of(
+                                "MIXED",
+                                "REASON",
+                                new byte[] {3},
+                                "DROP_VALUE",
+                                "scratch",
+                                "ITEMS",
+                                "b",
+                                "tenant-b",
+                                2L));
+
+        assertEquals(0x0213, fail.opcode());
+        Map<?, ?> values = (Map<?, ?>) fail.payload().get("values");
+        assertArrayEquals(new byte[] {2}, (byte[]) values.get("failure-detail"));
+        assertEquals(0x0214, cancel.opcode());
+        assertEquals(List.of("scratch"), cancel.payload().get("drop_values"));
+        assertEquals(List.of(List.of("b", "tenant-b", 2L)), cancel.payload().get("items"));
     }
 
     @Test

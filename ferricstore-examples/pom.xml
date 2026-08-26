@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.ferricstore</groupId>
     <artifactId>ferricstore-java-parent</artifactId>
-    <version>0.1.3</version>
+    <version>0.1.4</version>
   </parent>
 
   <artifactId>ferricstore-examples</artifactId>
@@ -15,6 +15,7 @@
   <description>Compile-checked examples for the FerricStore Java SDK.</description>
 
   <properties>
+    <jacoco.skip>true</jacoco.skip>
     <maven.deploy.skip>true</maven.deploy.skip>
     <spotbugs.skip>false</spotbugs.skip>
   </properties>

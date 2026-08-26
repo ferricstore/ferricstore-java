@@ -198,57 +198,62 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         if (commands.isEmpty()) {
             return CompletableFuture.completedFuture(List.of());
         }
-        List<CompletableFuture<List<Object>>> batches = new ArrayList<>();
+        List<PreparedPipelineBatch> batches = new ArrayList<>();
         for (int start = 0; start < commands.size(); start += MAX_PIPELINE_COMMANDS) {
             int end = Math.min(start + MAX_PIPELINE_COMMANDS, commands.size());
-            batches.add(pipelineBatchAsync(commands.subList(start, end)));
+            batches.add(preparePipelineBatch(commands.subList(start, end)));
+        }
+        List<Object> results = new ArrayList<>(commands.size());
+        CompletableFuture<Void> sequence = CompletableFuture.completedFuture(null);
+        for (PreparedPipelineBatch batch : batches) {
+            sequence =
+                    AsyncFutures.compose(
+                            sequence,
+                            ignored ->
+                                    AsyncFutures.map(
+                                            executePipelineBatch(batch),
+                                            values -> {
+                                                results.addAll(values);
+                                                return null;
+                                            }));
         }
         return AsyncFutures.map(
-                AsyncFutures.sequence(batches),
-                batchResults -> {
-                    List<Object> results = new ArrayList<>(commands.size());
-                    batchResults.forEach(results::addAll);
-                    return java.util.Collections.unmodifiableList(results);
-                });
+                sequence,
+                ignored -> java.util.Collections.unmodifiableList(new ArrayList<>(results)));
     }
 
     @SuppressWarnings("PMD.AvoidInstantiatingObjectsInLoops")
-    private CompletableFuture<List<Object>> pipelineBatchAsync(List<List<Object>> commands) {
+    private PreparedPipelineBatch preparePipelineBatch(List<List<Object>> commands) {
         FlowCreatePipeline.Batch flowCreateBatch = FlowCreatePipeline.tryParse(commands);
         NativeFlowPipelineCodec.Encoded flowCreateMany =
                 NativeFlowPipelineCodec.tryEncodeCreateMany(flowCreateBatch);
         if (flowCreateMany != null) {
-            int expected = commands.size();
-            long outerLane = laneFor(commands.get(0));
-            return AsyncFutures.map(
-                    requestWithRetryAsync(
-                            NativeProtocol.OP_FLOW_CREATE_MANY,
-                            outerLane,
-                            flowCreateMany.payload(),
-                            NativeProtocol.FLAG_CUSTOM_PAYLOAD),
-                    value -> requireFlowManyResults(value, expected));
+            return preparedPipelineBatch(
+                    NativeProtocol.OP_FLOW_CREATE_MANY,
+                    laneFor(commands.get(0)),
+                    flowCreateMany.payload(),
+                    NativeProtocol.FLAG_CUSTOM_PAYLOAD,
+                    commands.size(),
+                    PipelineResponseType.FLOW_MANY);
         }
         if (flowCreateBatch != null) {
-            int expected = commands.size();
-            long outerLane = laneFor(commands.get(0));
-            return AsyncFutures.map(
-                    requestWithRetryAsync(
-                            NativeProtocol.OP_FLOW_CREATE_MANY,
-                            outerLane,
-                            flowCreateBatch.typedPayload()),
-                    value -> requireFlowManyResults(value, expected));
+            return preparedPipelineBatch(
+                    NativeProtocol.OP_FLOW_CREATE_MANY,
+                    laneFor(commands.get(0)),
+                    encodeRequestBody(flowCreateBatch.typedPayload()),
+                    0,
+                    commands.size(),
+                    PipelineResponseType.FLOW_MANY);
         }
         NativePipelineCodec.Encoded compact = NativePipelineCodec.tryEncodeDetailed(commands);
         if (compact != null) {
-            int expected = commands.size();
-            long outerLane = laneFor(commands.get(0));
-            return AsyncFutures.map(
-                    requestWithRetryAsync(
-                            NativeProtocol.OP_PIPELINE,
-                            outerLane,
-                            compact.payload(),
-                            NativeProtocol.FLAG_CUSTOM_PAYLOAD),
-                    value -> requirePipelineResults(value, expected));
+            return preparedPipelineBatch(
+                    NativeProtocol.OP_PIPELINE,
+                    laneFor(commands.get(0)),
+                    compact.payload(),
+                    NativeProtocol.FLAG_CUSTOM_PAYLOAD,
+                    commands.size(),
+                    PipelineResponseType.PIPELINE);
         }
 
         List<Object> encodedCommands = new ArrayList<>(commands.size());
@@ -269,10 +274,38 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         payload.put("atomicity", "none");
         payload.put("commands", encodedCommands);
         payload.put("return", "pairs");
-        int expected = commands.size();
+        return preparedPipelineBatch(
+                NativeProtocol.OP_PIPELINE,
+                outerLane,
+                encodeRequestBody(payload),
+                0,
+                commands.size(),
+                PipelineResponseType.PIPELINE);
+    }
+
+    private PreparedPipelineBatch preparedPipelineBatch(
+            int opcode,
+            long laneId,
+            byte[] body,
+            int flags,
+            int expected,
+            PipelineResponseType responseType) {
+        validateRequestBody(body);
+        return new PreparedPipelineBatch(opcode, laneId, body, flags, expected, responseType);
+    }
+
+    private byte[] encodeRequestBody(Object payload) {
+        return NativeValueCodec.encode(payload, MAX_REQUEST_BYTES);
+    }
+
+    private CompletableFuture<List<Object>> executePipelineBatch(PreparedPipelineBatch batch) {
         return AsyncFutures.map(
-                requestWithRetryAsync(NativeProtocol.OP_PIPELINE, outerLane, payload),
-                value -> requirePipelineResults(value, expected));
+                requestWithRetryAsync(batch.opcode(), batch.laneId(), batch.body(), batch.flags()),
+                value ->
+                        switch (batch.responseType()) {
+                            case PIPELINE -> requirePipelineResults(value, batch.expected());
+                            case FLOW_MANY -> requireFlowManyResults(value, batch.expected());
+                        });
     }
 
     private PreparedCommand prepareCommand(List<Object> args, boolean allowCustomPayload) {
@@ -701,23 +734,27 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                     terminate(mismatch);
                     return;
                 }
-                if ((assembled.flags() & NativeProtocol.FLAG_CUSTOM_PAYLOAD) != 0) {
-                    String codec =
-                            negotiatedCapabilities
-                                    .get()
-                                    .compactResponseCodecs()
-                                    .get(assembled.identity().opcode());
-                    if (codec == null) {
-                        NativeProtocolException unsupported = unsupportedCustomPayload(assembled);
-                        request.future().completeExceptionally(unsupported);
-                        terminate(unsupported);
-                        return;
+                try {
+                    if ((assembled.flags() & NativeProtocol.FLAG_CUSTOM_PAYLOAD) != 0) {
+                        String codec =
+                                negotiatedCapabilities
+                                        .get()
+                                        .compactResponseCodecs()
+                                        .get(assembled.identity().opcode());
+                        if (codec == null) {
+                            throw unsupportedCustomPayload(assembled);
+                        }
+                        request.future()
+                                .complete(
+                                        NativeCompactResponseCodec.decode(codec, assembled.body()));
+                    } else {
+                        request.future().complete(NativeResponseCodec.decode(assembled.body()));
                     }
-                    request.future()
-                            .complete(NativeCompactResponseCodec.decode(codec, assembled.body()));
-                    continue;
+                } catch (RuntimeException error) {
+                    request.future().completeExceptionally(error);
+                    terminate(error);
+                    return;
                 }
-                request.future().complete(NativeResponseCodec.decode(assembled.body()));
             }
         } catch (IOException error) {
             if (!closed.get()) {
@@ -854,6 +891,19 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         return new NativeProtocolException(
                 "native connection failed after a request was sent; outcome is unknown", cause);
     }
+
+    private enum PipelineResponseType {
+        PIPELINE,
+        FLOW_MANY
+    }
+
+    private record PreparedPipelineBatch(
+            int opcode,
+            long laneId,
+            byte[] body,
+            int flags,
+            int expected,
+            PipelineResponseType responseType) {}
 
     private record PreparedCommand(int opcode, long laneId, Object payload, int flags) {}
 

@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 final class AsyncFutures {
@@ -70,6 +71,51 @@ final class AsyncFutures {
                 (ignored, failure) -> {
                     if (result.isCancelled()) {
                         source.cancel(false);
+                    }
+                });
+        return result;
+    }
+
+    static <S, T> CompletableFuture<T> compose(
+            CompletableFuture<S> source,
+            Function<? super S, ? extends CompletableFuture<T>> mapper) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        AtomicReference<CompletableFuture<T>> next = new AtomicReference<>();
+        source.whenComplete(
+                (value, failure) -> {
+                    if (failure != null) {
+                        result.completeExceptionally(unwrap(failure));
+                        return;
+                    }
+                    CompletableFuture<T> mapped;
+                    try {
+                        mapped = mapper.apply(value);
+                    } catch (RuntimeException error) {
+                        result.completeExceptionally(error);
+                        return;
+                    }
+                    next.set(mapped);
+                    if (result.isCancelled()) {
+                        mapped.cancel(false);
+                        return;
+                    }
+                    mapped.whenComplete(
+                            (mappedValue, mappedFailure) -> {
+                                if (mappedFailure != null) {
+                                    result.completeExceptionally(unwrap(mappedFailure));
+                                } else {
+                                    result.complete(mappedValue);
+                                }
+                            });
+                });
+        result.whenComplete(
+                (ignored, failure) -> {
+                    if (result.isCancelled()) {
+                        source.cancel(false);
+                        CompletableFuture<T> mapped = next.get();
+                        if (mapped != null) {
+                            mapped.cancel(false);
+                        }
                     }
                 });
         return result;

@@ -12,10 +12,12 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -245,6 +247,106 @@ final class NativeExecutorTest {
                                 .stream()
                                 .map(NativeExecutorTest::text)
                                 .toList());
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void validatesEveryPipelineChunkBeforeSendingTheFirstChunk() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    socket.setSoTimeout(500);
+                                    assertThrows(
+                                            SocketTimeoutException.class,
+                                            () -> readRequest(socket));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                List<List<Object>> commands = new ArrayList<>(1_025);
+                for (int index = 0; index < 1_024; index++) {
+                    commands.add(List.of("PING"));
+                }
+                commands.add(List.of());
+
+                assertThrows(
+                        IllegalArgumentException.class, () -> executor.pipelineAsync(commands));
+                served.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void schedulesPipelineChunksWithinTheConfiguredPendingLimit() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 256 * 1024));
+
+                                    NativeFrame first = readRequest(socket);
+                                    assertEquals(
+                                            1_024, list(map(first.body()).get("commands")).size());
+                                    writeResponse(
+                                            socket,
+                                            first.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            pipelineResults(0, 1_024));
+
+                                    NativeFrame second = readRequest(socket);
+                                    assertEquals(
+                                            1, list(map(second.body()).get("commands")).size());
+                                    writeResponse(
+                                            socket,
+                                            second.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            pipelineResults(1_024, 1));
+                                }
+                                return null;
+                            });
+
+            NativeTransportOptions options =
+                    NativeTransportOptions.builder().maxPendingRequests(1).build();
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(), options)) {
+                List<List<Object>> commands = new ArrayList<>(1_025);
+                for (int index = 0; index < 1_025; index++) {
+                    commands.add(List.of("PING"));
+                }
+
+                List<Object> results = executor.pipelineAsync(commands).get(5, TimeUnit.SECONDS);
+                assertEquals(1_025, results.size());
+                assertEquals("result-0", text(results.get(0)));
+                assertEquals("result-1024", text(results.get(1_024)));
             }
             served.get(5, TimeUnit.SECONDS);
         } finally {
@@ -837,6 +939,87 @@ final class NativeExecutorTest {
     }
 
     @Test
+    void malformedResponseFailsTheRemovedRequestWithoutWaitingForItsTimeout() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    NativeFrame command = readRequest(socket);
+                                    writeRawResponse(
+                                            socket,
+                                            command.identity(),
+                                            0,
+                                            new byte[] {0, 0, (byte) 0xff});
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                CompletableFuture<Object> response = executor.executeAsync(List.of("PING"));
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+                assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertTrue(failure.getCause().getMessage().contains("unknown tag"));
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void malformedCompactResponseFailsTheRemovedRequestWithoutWaitingForItsTimeout()
+            throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    NativeFrame pipeline = readRequest(socket);
+                                    writeRawResponse(
+                                            socket,
+                                            pipeline.identity(),
+                                            NativeProtocol.FLAG_CUSTOM_PAYLOAD,
+                                            new byte[] {0, 0, (byte) 0x95});
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                CompletableFuture<List<Object>> response =
+                        executor.pipelineAsync(List.of(List.of("GET", "key")));
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+                assertInstanceOf(NativeProtocolException.class, failure.getCause());
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
     void retriesOnlyWhenTheServerMarksBusyOrRerouteRetryableAndSafe() throws Exception {
         ExecutorService tasks = Executors.newSingleThreadExecutor();
         try (ServerSocket server = new ServerSocket(0)) {
@@ -1125,6 +1308,14 @@ final class NativeExecutorTest {
             output.writeInt(count);
         }
         return bytes.toByteArray();
+    }
+
+    private static List<Object> pipelineResults(int start, int count) {
+        List<Object> results = new ArrayList<>(count);
+        for (int index = start; index < start + count; index++) {
+            results.add(List.of("ok", "result-" + index));
+        }
+        return results;
     }
 
     @SuppressWarnings("unchecked")

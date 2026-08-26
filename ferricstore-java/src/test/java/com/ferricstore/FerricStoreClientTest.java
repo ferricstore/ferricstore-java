@@ -62,6 +62,42 @@ final class FerricStoreClientTest {
     }
 
     @Test
+    void retryRejectsNamedValueMutationsThatOssDoesNotSupport() {
+        FerricStoreClient client = FerricStoreClient.fromExecutor(new FakeExecutor("unused"));
+        FlowMutationFields dropValue = FlowMutationFields.builder().dropValue("scratch").build();
+
+        UnsupportedOperationException single =
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () ->
+                                client.retry(
+                                        RetryOptions.builder("flow-1", "lease-1", 1)
+                                                .value("detail", "value")
+                                                .build()));
+        UnsupportedOperationException many =
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () ->
+                                client.retryMany(
+                                        RetryManyOptions.builder(
+                                                        List.of(
+                                                                new ClaimedItem(
+                                                                        "flow-1",
+                                                                        "lease-1",
+                                                                        1,
+                                                                        "tenant-a")))
+                                                .mutationFields(dropValue)
+                                                .build()));
+
+        assertEquals(
+                "FLOW.RETRY does not support named-value mutations in FerricStore OSS",
+                single.getMessage());
+        assertEquals(
+                "FLOW.RETRY_MANY does not support named-value mutations in FerricStore OSS",
+                many.getMessage());
+    }
+
+    @Test
     void createBuildsCommandDefaults() {
         FakeExecutor executor = new FakeExecutor("OK");
         FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
@@ -641,6 +677,27 @@ final class FerricStoreClientTest {
                                                 .build()));
 
         assertEquals("mixed spawnChildren items require partition key", err.getMessage());
+    }
+
+    @Test
+    void spawnChildrenMixedUsesUnambiguousMappedItems() {
+        FakeExecutor executor = new FakeExecutor("OK");
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        client.spawnChildren(
+                SpawnChildrenOptions.builder(
+                                "parent-1",
+                                List.of(
+                                        new ChildSpec("first", "resize", bytes("one"), "p1"),
+                                        new ChildSpec("second", "resize", bytes("two"), "p2")))
+                        .nowMs(100)
+                        .build());
+
+        List<Object> command = executor.last();
+        int itemsAt = command.indexOf("ITEMS_MAPS");
+        assertEquals(2, command.get(itemsAt + 1));
+        assertEquals("p1", ((Map<?, ?>) command.get(itemsAt + 2)).get("partition_key"));
+        assertEquals("p2", ((Map<?, ?>) command.get(itemsAt + 3)).get("partition_key"));
     }
 
     @Test
