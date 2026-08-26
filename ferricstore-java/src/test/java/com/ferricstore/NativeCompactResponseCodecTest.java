@@ -131,6 +131,20 @@ final class NativeCompactResponseCodecTest {
                 (byte[]) decoded.firstFailure().value());
     }
 
+    @Test
+    void rejectsCompactPipelineUnsignedCountsBeyondTheCollectionLimit() throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream output = new DataOutputStream(bytes)) {
+            output.writeShort(NativeProtocol.STATUS_OK);
+            output.writeByte(0x95);
+            output.writeInt(-1);
+        }
+
+        assertThrows(
+                NativeProtocolException.class,
+                () -> NativeCompactResponseCodec.decode("pipeline_v1", bytes.toByteArray()));
+    }
+
     private static byte[] compactMgetBody(List<?> values) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream output = new DataOutputStream(bytes)) {

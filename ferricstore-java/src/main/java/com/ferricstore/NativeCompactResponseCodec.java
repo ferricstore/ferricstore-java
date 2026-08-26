@@ -54,12 +54,9 @@ final class NativeCompactResponseCodec {
         if (Byte.toUnsignedInt(input.get()) != COMPACT_OK_LIST) {
             throw malformed(codec);
         }
-        long count = readUnsignedInt(input, codec);
-        if (count > MAX_COLLECTION_ITEMS) {
-            throw malformed(codec);
-        }
+        int count = readCollectionCount(input, codec);
         requireFullyConsumed(input, codec);
-        List<Object> values = new ArrayList<>((int) count);
+        List<Object> values = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
             values.add(new byte[] {'O', 'K'});
         }
@@ -74,11 +71,11 @@ final class NativeCompactResponseCodec {
         if (Byte.toUnsignedInt(input.get()) != COMPACT_PIPELINE) {
             throw malformed(codec);
         }
-        long count = readUnsignedInt(input, codec);
-        if (count > MAX_COLLECTION_ITEMS || count > input.remaining()) {
+        int count = readCollectionCount(input, codec);
+        if (count > input.remaining()) {
             throw malformed(codec);
         }
-        List<Object> results = new ArrayList<>((int) count);
+        List<Object> results = new ArrayList<>(count);
         PipelineFailure firstFailure = null;
         for (int index = 0; index < count; index++) {
             require(input, 1, codec);
@@ -172,6 +169,14 @@ final class NativeCompactResponseCodec {
     private static long readUnsignedInt(ByteBuffer input, String codec) {
         require(input, Integer.BYTES, codec);
         return Integer.toUnsignedLong(input.getInt());
+    }
+
+    private static int readCollectionCount(ByteBuffer input, String codec) {
+        long count = readUnsignedInt(input, codec);
+        if (count > MAX_COLLECTION_ITEMS) {
+            throw malformed(codec);
+        }
+        return (int) count;
     }
 
     private static void require(ByteBuffer input, int bytes, String codec) {
