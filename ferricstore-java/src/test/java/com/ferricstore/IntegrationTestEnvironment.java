@@ -51,6 +51,7 @@ final class IntegrationTestEnvironment {
                 HttpTransportOptions.builder()
                         .username(requiredEnvironment("FERRICSTORE_USERNAME"))
                         .password(requiredEnvironment("FERRICSTORE_PASSWORD"))
+                        .maxConcurrentRequests(32)
                         .compact(
                                 "msgpack"
                                         .equals(

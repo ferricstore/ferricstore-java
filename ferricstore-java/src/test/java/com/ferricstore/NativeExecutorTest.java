@@ -254,6 +254,8 @@ final class NativeExecutorTest {
 
     @Test
     void multiplexesConcurrentRequestsAndCorrelatesOutOfOrderResponses() throws Exception {
+        CountDownLatch requestsArrived = new CountDownLatch(1);
+        CountDownLatch releaseResponses = new CountDownLatch(1);
         ExecutorService tasks = Executors.newSingleThreadExecutor();
         try (ServerSocket server = new ServerSocket(0)) {
             Future<Void> served =
@@ -272,6 +274,8 @@ final class NativeExecutorTest {
                                     NativeFrame second = readRequest(socket);
                                     String firstValue = commandArgument(first);
                                     String secondValue = commandArgument(second);
+                                    requestsArrived.countDown();
+                                    assertTrue(releaseResponses.await(5, TimeUnit.SECONDS));
                                     writeResponse(
                                             socket,
                                             second.identity(),
@@ -293,8 +297,10 @@ final class NativeExecutorTest {
                 CompletableFuture<Object> alpha = executor.executeAsync(List.of("ECHO", "alpha"));
                 CompletableFuture<Object> beta = executor.executeAsync(List.of("ECHO", "beta"));
 
+                assertTrue(requestsArrived.await(5, TimeUnit.SECONDS));
                 assertFalse(alpha.isDone());
                 assertFalse(beta.isDone());
+                releaseResponses.countDown();
                 assertEquals("alpha", text(alpha.get()));
                 assertEquals("beta", text(beta.get()));
             }
