@@ -275,7 +275,9 @@ final class FerricStoreFlowArgumentsIntegrationTest {
                                                     mixedPartitionB,
                                                     mappedPartition))
                                     .leaseMs(30_000)
-                                    .limit(3)
+                                    // The OSS router divides this budget among participating
+                                    // shards without backfilling unused per-shard quota.
+                                    .limit(100)
                                     .nowMs(now)
                                     .blockMs(1)
                                     .payload(true)
