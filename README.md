@@ -1,6 +1,6 @@
 # FerricStore Java SDK
 
-Java 21+ SDK for FerricStore and FerricFlow.
+Java 17+ SDK for FerricStore and FerricFlow. Java 21+ applications may opt into virtual-thread workers.
 
 FerricFlow is an explicit durable state-machine layer over FerricStore. Your application runs normal Java code. FerricFlow stores workflow state, leases, retry data, named values, history, signals, and terminal status.
 
@@ -10,18 +10,20 @@ FLOW.CREATE -> FLOW.CLAIM_DUE -> handler -> FLOW.TRANSITION / COMPLETE / FAIL / 
 
 ## Modules
 
-- `com.ferricstore:ferricstore-java` - core SDK and RESP command helpers.
-- `com.ferricstore:ferricstore-spring-boot-starter` - Spring Boot auto-configuration.
-- `com.ferricstore:ferricstore-spring-statemachine` - optional Spring Statemachine adapter for workflow graph validation.
+- `io.github.ferricstore:ferricstore-java` - framework-neutral core SDK and native-protocol command helpers.
+- `io.github.ferricstore:ferricstore-spring-boot-starter` - Spring Boot auto-configuration.
+- `io.github.ferricstore:ferricstore-spring-statemachine` - optional Spring Statemachine adapter for workflow graph validation.
 - `ferricstore-examples` - compile-checked example programs.
 
 ## Maven
 
+Artifacts are published under the FerricStore GitHub organization namespace. Java packages remain under `com.ferricstore`.
+
 ```xml
 <dependency>
-  <groupId>com.ferricstore</groupId>
+  <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.4</version>
 </dependency>
 ```
 
@@ -29,9 +31,9 @@ Spring Boot:
 
 ```xml
 <dependency>
-  <groupId>com.ferricstore</groupId>
+  <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.4</version>
 </dependency>
 ```
 
@@ -39,11 +41,82 @@ Optional Spring Statemachine adapter:
 
 ```xml
 <dependency>
-  <groupId>com.ferricstore</groupId>
+  <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.4</version>
 </dependency>
 ```
+
+## TCP/TLS And HTTP/HTTPS
+
+The command API is transport-independent. The URL selects the network layer:
+
+```java
+FerricStoreClient tcp = FerricStoreClient.connect(
+    "ferric://127.0.0.1:6388", new JsonCodec());
+
+HttpTransportOptions http = HttpTransportOptions.builder()
+    .username("lambda-user")
+    .password(System.getenv("FERRICSTORE_PASSWORD"))
+    .maxConcurrentRequests(100)
+    .maxPendingRequests(1000)
+    .compact(true)
+    .build();
+FerricStoreClient https = FerricStoreClient.connect(
+    "https://gateway.example", new JsonCodec(), http);
+```
+
+HTTP also supports bearer tokens and custom headers. It uses Java 17's persistent `HttpClient`, defaults to HTTP/1.1, and sends an entire SDK pipeline in one HTTP request. `.compact(true)` selects FerricStore's binary MessagePack envelope, avoiding JSON Base64 expansion; the default remains binary-safe JSON for compatibility with older HTTP gateways. Redirects are followed by default and authentication headers are preserved, including across origins, so deployments that allow redirects must trust every redirect target. API gateways should use `307` or `308` when the redirected request must remain a `POST`; normal HTTP semantics may change `301`, `302`, or `303` to `GET`. Set `.redirects(HttpClient.Redirect.NEVER)` when redirects are not acceptable.
+
+For a private native CA, build an `SSLContext` and pass it through `NativeTransportOptions.builder().sslContext(context)`. The equivalent HTTPS option is available on `HttpTransportOptions`.
+
+Most commands work unchanged on both transports. HTTP supports blocking list operations and `XREAD`/`XREADGROUP` as long-lived single requests; the SDK extends the request deadline by each finite blocking timeout and disables its default deadline for an explicit infinite wait. Native TCP/TLS is required for connection-affine transactions, Pub/Sub subscriptions, `FETCH_OR_COMPUTE*`, and session-control commands. HTTP rejects those commands before sending a request; authentication is supplied in HTTP headers rather than with `AUTH`. Publishing ordinary Pub/Sub messages remains available over HTTP.
+
+Every command is also available through a framework-neutral `CompletableFuture`
+API on Java 17 and newer:
+
+```java
+CompletableFuture<Object> first = client.commandAsync("GET", "first");
+CompletableFuture<Object> second = client.commandAsync("GET", "second");
+
+CompletableFuture.allOf(first, second).join();
+Object firstValue = first.join();
+Object secondValue = second.join();
+
+CompletableFuture<List<Object>> batch = client.pipelineAsync(List.of(
+    List.of("GET", "first"),
+    List.of("GET", "second")));
+```
+
+Native TCP/TLS sends concurrent calls over one multiplexed connection. Each
+frame carries a request ID and lane ID; the dedicated reader correlates
+out-of-order responses without one waiting thread per request. HTTP/HTTPS uses
+`HttpClient.sendAsync` and asynchronously queues callers behind the configured
+`maxConcurrentRequests` limit. `maxPendingRequests` bounds overload queues for
+both transports and fails excess work before it can consume unbounded memory.
+The existing synchronous methods remain
+available and wait on the same asynchronous transport foundation. Native
+`pipelineAsync` overlaps independent commands and preserves result order;
+the synchronous native pipeline retains its established sequential semantics.
+HTTP sends either pipeline form as one ordered batch request. Use
+`thenApplyAsync`/`thenComposeAsync` with an application executor when a
+completion performs blocking or expensive application work.
+
+Run the complete HTTP-compatible integration surface through a real TLS
+listener with ACL authentication using:
+
+```bash
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.12@sha256:3aef2c4200dff987a5797c08548582136d827838ccc0286aef5a00e8f4f6aa62 \
+  scripts/run-http-integration.sh
+```
+
+The runner creates a private CA, verifies that unauthenticated access and a
+restricted user's forbidden `SET` are rejected, and supplies
+`FERRICSTORE_USERNAME`, `FERRICSTORE_PASSWORD`, and `FERRICSTORE_CA_FILE`.
+It also drives 1,024 operation rounds across 32 concurrent callers through one
+shared HTTP client, checks response correlation and atomic updates, and proves
+that 16 blocking requests are simultaneously in flight at the server.
+Connection-affine tests remain in the native integration job.
 
 ## Local FerricStore
 
@@ -54,13 +127,13 @@ docker compose up -d ferricstore
 Default URL:
 
 ```text
-redis://127.0.0.1:6379/0
+ferric://127.0.0.1:6388
 ```
 
 ## Durable Queue
 
 ```java
-try (FerricStoreClient client = FerricStoreClient.connect("redis://127.0.0.1:6379/0", new JsonCodec())) {
+try (FerricStoreClient client = FerricStoreClient.connect("ferric://127.0.0.1:6388", new JsonCodec())) {
     Queue queue = new QueueClient(client).queue("email");
 
     queue.enqueue("email-1", Map.of("template", "welcome", "userId", "user-1"));
@@ -68,7 +141,6 @@ try (FerricStoreClient client = FerricStoreClient.connect("redis://127.0.0.1:637
     QueueWorkerResult result = queue.worker("email-worker-1")
         .batchSize(256)
         .concurrency(128)
-        .virtualThreads()
         .runOnce(job -> {
             System.out.println(job.id() + " " + job.payload());
             return Map.of("sent", true);
@@ -76,12 +148,31 @@ try (FerricStoreClient client = FerricStoreClient.connect("redis://127.0.0.1:637
 }
 ```
 
-The low-level client is synchronous and blocking. Worker concurrency is handled at the worker layer: a worker claims a batch of durable leases, then processes those jobs concurrently before writing complete, retry, fail, or transition commands back to FerricStore. `virtualThreads()` uses Java virtual threads and still respects the configured `concurrency` limit. Spring apps can pass an application-owned `ExecutorService` with `.executor(...)`.
+The low-level client provides both synchronous and `CompletableFuture` command APIs. Worker concurrency is handled at the worker layer: a worker claims a batch of durable leases, then processes those jobs concurrently before writing complete, retry, fail, or transition commands back to FerricStore. Java 17 uses a bounded platform-thread pool. On Java 21+, `.virtualThreads()` selects virtual threads and still respects the configured `concurrency` limit; on Java 17 it fails clearly instead of silently changing behavior. Any application—not only Spring—may pass an application-owned `ExecutorService` with `.executor(...)`; the SDK never closes a supplied executor.
+
+For Lambda or another one-shot invocation, use `runOnce(...)` as above. For a long-running service, keep the execution resources alive across polls with a session while retaining control of scheduling and shutdown:
+
+```java
+QueueWorker worker = queue.worker("email-worker-1")
+    .batchSize(256)
+    .concurrency(128);
+
+try (QueueWorkerSession session = worker.openSession(job -> sendEmail(job))) {
+    while (!stopping.get()) {
+        QueueWorkerResult result = session.runOnce();
+        if (result.claimed() == 0) {
+            Thread.sleep(50);
+        }
+    }
+}
+```
+
+A session permits one active `runOnce` call, reuses its executor across calls, and drains an active batch for up to 30 seconds on `close()`. Use `close(Duration)` for an explicit bound. Timeout cancellation and Java interruption are best effort; FerricStore lease and fencing tokens remain the authority that rejects stale completion after ownership changes. The SDK does not create a background scheduler, Reactor runtime, or global thread pool.
 
 ## Explicit Workflow
 
 ```java
-try (FerricStoreClient client = FerricStoreClient.connect("redis://127.0.0.1:6379/0", new JsonCodec())) {
+try (FerricStoreClient client = FerricStoreClient.connect("ferric://127.0.0.1:6388", new JsonCodec())) {
     Workflow order = new WorkflowClient(client).workflow("order", "created");
 
     order.state("created", ctx -> {
@@ -98,7 +189,6 @@ try (FerricStoreClient client = FerricStoreClient.connect("redis://127.0.0.1:637
     order.worker("order-worker-1", List.of("created", "charged"))
         .batchSize(128)
         .concurrency(64)
-        .virtualThreads()
         .runOnce();
 }
 ```
@@ -125,7 +215,6 @@ Workflow order = new WorkflowClient(client).workflow("order", "created")
 
 order.worker("order-worker-1", List.of("created", "charged"))
     .concurrency(64)
-    .virtualThreads()
     .runOnce();
 ```
 
@@ -179,6 +268,11 @@ for (ClaimedItem job : compactJobs) {
 
 Use `claimDue` when handlers need hydrated workflow records and payloads. Use `claimJobs` when a worker only needs id, partition, lease token, and fencing token for a write such as complete, retry, or fail.
 
+Named values are supported by create, transition, complete, fail, cancel, their supported
+batch variants, and child creation. FerricStore OSS retry and retry-many operations do not mutate
+named values; the Java client rejects retry value additions, references, drops, and overrides
+before sending a request. Retry attribute and state-metadata mutations remain supported.
+
 ## FerricStore KV And Data Structures
 
 The same client exposes typed helpers for FerricStore's Redis-compatible store commands:
@@ -198,6 +292,8 @@ client.bloom().add("seen-filter", "user:1");
 
 Available helpers: `kv`, `hash`, `lists`, `sets`, `zset`, `stream`, `bitmap`, `hyperloglog`, `geo`, `json`, `bloom`, `cuckoo`, `cms`, `topk`, and `tdigest`.
 
+The `json` helper stores and retrieves complete JSON documents through FerricStore's built-in string commands. Its supported path is `$`; FerricStore OSS does not expose RedisJSON path-mutation commands.
+
 Use `client.command(...)` for commands that do not have a typed helper yet or for connection-state flows.
 
 ## Spring Boot
@@ -206,9 +302,19 @@ The starter contributes `Codec`, `FerricStoreClient`, `QueueClient`, and `Workfl
 
 ```yaml
 ferricstore:
-  url: redis://127.0.0.1:6379/0
+  url: https://gateway.example
   codec: json
+  http:
+    username: lambda-user
+    password: ${FERRICSTORE_PASSWORD}
+    max-concurrent-requests: 100
+    max-pending-requests: 1000
+    compact: true
+  native:
+    max-pending-requests: 1024
 ```
+
+The starter accepts bearer authentication, Basic username/password, custom headers, timeouts, request/response limits, redirect policy, compact MessagePack, and bounded concurrency under `ferricstore.http`. Native in-flight work is bounded under `ferricstore.native`. Plain Java applications use the same transport options directly; Spring is optional.
 
 ## Examples
 
@@ -225,17 +331,42 @@ Compile-checked examples live under `ferricstore-examples/src/main/java/com/ferr
 
 ```bash
 mise install
-mise exec -- mvn test
+mise run test
+mise run test:java17
+mise run coverage
 ```
+
+Coverage is enforced during `verify`: the core SDK must retain at least 80%
+line and 60% branch coverage. HTML reports are generated under each library
+module's `target/site/jacoco/` directory.
 
 Run integration tests:
 
 ```bash
 docker compose up -d ferricstore
 scripts/wait-for-ferricstore.sh
-FERRICSTORE_INTEGRATION=1 mise exec -- mvn -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test
+mise run integration:java17
+mise run integration:java21
 docker compose down -v
+
+# Authenticated TLS HTTP integration using the pinned Docker image
+mise run integration:http:java17
+mise run integration:http:java21
+
+# Required before release: Java 17/21 native and HTTP against the current OSS image
+FERRICSTORE_CANDIDATE_IMAGE=ferricstore-sdk-integration:local \
+  mise run integration:candidate
 ```
+
+Both Java 17 and Java 21 execute the identical full command and shared-client
+concurrency suites. The native integration also includes a blocked-lane test
+proving that unrelated lanes continue on the same TCP connection.
+
+Run the real-server KV benchmark with `mise run benchmark:tcp` or
+`mise run benchmark:http`. Run the 10,000-flow state-machine benchmark with
+`mise run benchmark:workflow:tcp` or `mise run benchmark:workflow:http`. The
+workload definitions, reproducibility rules, and diagnostic baselines are in
+[docs/benchmark.md](docs/benchmark.md).
 
 Generate API docs:
 
@@ -250,7 +381,7 @@ The Java SDK borrows useful ergonomics from Temporal Java, Restate Java/Kotlin, 
 
 - workflow progress is stored as state transitions, not as a replayed Java stack;
 - current state, lease owner, retry data, history, values, and next claimable state are workflow data;
-- the same flow can be processed by services in different languages over RESP;
+- the same flow can be processed by services in different languages over native TCP/TLS or stateless HTTP/HTTPS;
 - Spring support is auto-configuration, not instrumentation of business methods.
 
 See [docs/design.md](docs/design.md) and [docs/python-parity.md](docs/python-parity.md).

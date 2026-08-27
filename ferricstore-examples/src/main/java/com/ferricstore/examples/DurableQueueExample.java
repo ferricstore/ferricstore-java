@@ -13,7 +13,7 @@ public final class DurableQueueExample {
     private DurableQueueExample() {}
 
     public static void main(String[] args) {
-        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "redis://127.0.0.1:6379/0");
+        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
         try (FerricStoreClient client = FerricStoreClient.connect(url, new JsonCodec())) {
             Queue queue = new QueueClient(client).queue("thumbnail");
             String id = "thumbnail-" + System.currentTimeMillis();

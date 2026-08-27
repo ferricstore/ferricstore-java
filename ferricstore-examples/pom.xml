@@ -5,9 +5,9 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>com.ferricstore</groupId>
+    <groupId>io.github.ferricstore</groupId>
     <artifactId>ferricstore-java-parent</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.4</version>
   </parent>
 
   <artifactId>ferricstore-examples</artifactId>
@@ -15,20 +15,27 @@
   <description>Compile-checked examples for the FerricStore Java SDK.</description>
 
   <properties>
+    <jacoco.skip>true</jacoco.skip>
     <maven.deploy.skip>true</maven.deploy.skip>
     <spotbugs.skip>false</spotbugs.skip>
   </properties>
 
   <dependencies>
     <dependency>
-      <groupId>com.ferricstore</groupId>
+      <groupId>io.github.ferricstore</groupId>
       <artifactId>ferricstore-java</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>com.ferricstore</groupId>
+      <groupId>io.github.ferricstore</groupId>
       <artifactId>ferricstore-spring-statemachine</artifactId>
       <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>

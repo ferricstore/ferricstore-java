@@ -2,6 +2,7 @@ package com.ferricstore.examples;
 
 import com.ferricstore.FerricStoreClient;
 import com.ferricstore.JsonCodec;
+import com.ferricstore.SetOptions;
 import com.ferricstore.ZAddMember;
 import java.util.List;
 import java.util.Map;
@@ -12,11 +13,15 @@ public final class StoreUsageExample {
     private StoreUsageExample() {}
 
     public static void main(String[] args) {
-        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "redis://127.0.0.1:6379/0");
+        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
         try (FerricStoreClient client = FerricStoreClient.connect(url, new JsonCodec())) {
             String suffix = Long.toString(System.currentTimeMillis(), 36);
 
-            client.kv().set("session:" + suffix, Map.of("userId", "user-1"), 60_000L, false);
+            client.kv()
+                    .set(
+                            "session:" + suffix,
+                            Map.of("userId", "user-1"),
+                            SetOptions.builder().pxMilliseconds(60_000L).build());
             client.hash().hset("user:" + suffix, Map.of("email", "ada@example.com", "plan", "pro"));
             client.lists().rpush("jobs:" + suffix, Map.of("id", "job-1"), Map.of("id", "job-2"));
             client.sets().sadd("seen:" + suffix, "user-1", "user-2");

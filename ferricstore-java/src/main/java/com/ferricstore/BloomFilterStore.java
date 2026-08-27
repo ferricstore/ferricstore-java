@@ -9,8 +9,10 @@ public final class BloomFilterStore {
         this.client = client;
     }
 
-    public boolean reserve(String key, double errorRate, long capacity) {
-        return CommandArgs.ok(client.command("BF.RESERVE", key, errorRate, capacity));
+    public boolean reserve(String key, double errorRate, long capacity, Object... options) {
+        List<Object> args = CommandArgs.args("BF.RESERVE", key, errorRate, capacity);
+        args.addAll(List.of(options));
+        return CommandArgs.ok(client.command(args));
     }
 
     public boolean add(String key, Object element) {
@@ -27,6 +29,16 @@ public final class BloomFilterStore {
 
     public boolean exists(String key, Object element) {
         return Resp.number(client.command("BF.EXISTS", key, client.codec().encode(element))) == 1;
+    }
+
+    public List<Boolean> mexists(String key, Object... elements) {
+        List<Object> args = CommandArgs.args("BF.MEXISTS", key);
+        for (Object element : elements) {
+            args.add(client.codec().encode(element));
+        }
+        return Resp.list(client.command(args)).stream()
+                .map(value -> Resp.number(value) == 1)
+                .toList();
     }
 
     public long card(String key) {

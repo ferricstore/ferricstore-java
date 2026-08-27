@@ -1,5 +1,8 @@
 package com.ferricstore;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 public record RetryOptions(
         String id,
         String leaseToken,
@@ -9,7 +12,19 @@ public record RetryOptions(
         Object payload,
         long runAtMs,
         long nowMs,
+        Map<String, ?> values,
+        Map<String, String> valueRefs,
+        FlowMutationFields mutationFields,
         boolean returnRecord) {
+    public RetryOptions {
+        FlowValidation.requireText(id, "flow id");
+        FlowValidation.requireText(leaseToken, "flow lease token");
+        FlowValidation.requireFencingToken(fencingToken);
+        values = ImmutableCopies.map(values);
+        valueRefs = ImmutableCopies.map(valueRefs);
+        mutationFields = mutationFields == null ? FlowMutationFields.empty() : mutationFields;
+    }
+
     public static Builder builder(String id, String leaseToken, long fencingToken) {
         return new Builder(id, leaseToken, fencingToken);
     }
@@ -23,6 +38,9 @@ public record RetryOptions(
         private Object payload;
         private long runAtMs;
         private long nowMs;
+        private final Map<String, Object> values = new LinkedHashMap<>();
+        private final Map<String, String> valueRefs = new LinkedHashMap<>();
+        private FlowMutationFields mutationFields = FlowMutationFields.empty();
         private boolean returnRecord;
 
         private Builder(String id, String leaseToken, long fencingToken) {
@@ -56,6 +74,27 @@ public record RetryOptions(
             return this;
         }
 
+        /**
+         * Retained for source compatibility. FerricStore OSS retry semantics do not support
+         * named-value mutations, so passing values to {@link FerricStoreClient#retry(RetryOptions)}
+         * fails before a request is sent.
+         */
+        public Builder value(String name, Object value) {
+            values.put(name, value);
+            return this;
+        }
+
+        /** See {@link #value(String, Object)}. */
+        public Builder valueRef(String name, String value) {
+            valueRefs.put(name, value);
+            return this;
+        }
+
+        public Builder mutationFields(FlowMutationFields value) {
+            mutationFields = value;
+            return this;
+        }
+
         public Builder returnRecord(boolean value) {
             this.returnRecord = value;
             return this;
@@ -71,6 +110,9 @@ public record RetryOptions(
                     payload,
                     runAtMs,
                     nowMs,
+                    values,
+                    valueRefs,
+                    mutationFields,
                     returnRecord);
         }
     }

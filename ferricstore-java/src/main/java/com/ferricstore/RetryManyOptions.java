@@ -13,11 +13,13 @@ public record RetryManyOptions(
         long nowMs,
         Boolean independent,
         Map<String, ?> values,
-        Map<String, String> valueRefs) {
+        Map<String, String> valueRefs,
+        FlowMutationFields mutationFields) {
     public RetryManyOptions {
         items = ImmutableCopies.list(items);
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
+        mutationFields = mutationFields == null ? FlowMutationFields.empty() : mutationFields;
     }
 
     public static Builder builder(List<ClaimedItem> items) {
@@ -34,6 +36,7 @@ public record RetryManyOptions(
         private Boolean independent;
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
+        private FlowMutationFields mutationFields = FlowMutationFields.empty();
 
         private Builder(List<ClaimedItem> items) {
             this.items = List.copyOf(items);
@@ -69,13 +72,24 @@ public record RetryManyOptions(
             return this;
         }
 
+        /**
+         * Retained for source compatibility. FerricStore OSS retry-many semantics do not support
+         * named-value mutations, so passing values to {@link
+         * FerricStoreClient#retryMany(RetryManyOptions)} fails before a request is sent.
+         */
         public Builder value(String name, Object value) {
             this.values.put(name, value);
             return this;
         }
 
+        /** See {@link #value(String, Object)}. */
         public Builder valueRef(String name, String ref) {
             this.valueRefs.put(name, ref);
+            return this;
+        }
+
+        public Builder mutationFields(FlowMutationFields value) {
+            mutationFields = value;
             return this;
         }
 
@@ -89,7 +103,8 @@ public record RetryManyOptions(
                     nowMs,
                     independent,
                     Map.copyOf(values),
-                    Map.copyOf(valueRefs));
+                    Map.copyOf(valueRefs),
+                    mutationFields);
         }
     }
 }

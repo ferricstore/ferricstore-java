@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Map;
 
 public record SpawnChildrenOptions(
-        String parentId,
+        String parentFlowId,
         List<ChildSpec> children,
         String partitionKey,
         String leaseToken,
@@ -18,6 +18,7 @@ public record SpawnChildrenOptions(
         String fromState,
         String onChildFailed,
         String onParentClosed,
+        MaxActiveMs maxActiveMs,
         Map<String, ?> values,
         Map<String, String> valueRefs,
         long nowMs) {
@@ -27,12 +28,12 @@ public record SpawnChildrenOptions(
         valueRefs = ImmutableCopies.map(valueRefs);
     }
 
-    public static Builder builder(String parentId, List<ChildSpec> children) {
-        return new Builder(parentId, children);
+    public static Builder builder(String parentFlowId, List<ChildSpec> children) {
+        return new Builder(parentFlowId, children);
     }
 
     public static final class Builder {
-        private final String parentId;
+        private final String parentFlowId;
         private final List<ChildSpec> children;
         private String partitionKey;
         private String leaseToken;
@@ -45,12 +46,13 @@ public record SpawnChildrenOptions(
         private String fromState;
         private String onChildFailed;
         private String onParentClosed;
+        private MaxActiveMs maxActiveMs;
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, String> valueRefs = new LinkedHashMap<>();
         private long nowMs;
 
-        private Builder(String parentId, List<ChildSpec> children) {
-            this.parentId = parentId;
+        private Builder(String parentFlowId, List<ChildSpec> children) {
+            this.parentFlowId = parentFlowId;
             this.children = List.copyOf(children);
         }
 
@@ -109,6 +111,16 @@ public record SpawnChildrenOptions(
             return this;
         }
 
+        public Builder maxActiveMs(long value) {
+            this.maxActiveMs = MaxActiveMs.of(value);
+            return this;
+        }
+
+        public Builder maxActiveMs(MaxActiveMs value) {
+            this.maxActiveMs = value;
+            return this;
+        }
+
         public Builder value(String name, Object value) {
             this.values.put(name, value);
             return this;
@@ -136,7 +148,7 @@ public record SpawnChildrenOptions(
 
         public SpawnChildrenOptions build() {
             return new SpawnChildrenOptions(
-                    parentId,
+                    parentFlowId,
                     children,
                     partitionKey,
                     leaseToken,
@@ -149,6 +161,7 @@ public record SpawnChildrenOptions(
                     fromState,
                     onChildFailed,
                     onParentClosed,
+                    maxActiveMs,
                     Map.copyOf(values),
                     Map.copyOf(valueRefs),
                     nowMs);

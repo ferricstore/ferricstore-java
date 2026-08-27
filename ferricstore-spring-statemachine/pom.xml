@@ -5,9 +5,9 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>com.ferricstore</groupId>
+    <groupId>io.github.ferricstore</groupId>
     <artifactId>ferricstore-java-parent</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.4</version>
   </parent>
 
   <artifactId>ferricstore-spring-statemachine</artifactId>
@@ -15,12 +15,14 @@
   <description>Optional Spring Statemachine integration for FerricFlow workflows.</description>
 
   <properties>
+    <jacoco.line.minimum>0.90</jacoco.line.minimum>
+    <jacoco.branch.minimum>0.80</jacoco.branch.minimum>
     <spotbugs.skip>false</spotbugs.skip>
   </properties>
 
   <dependencies>
     <dependency>
-      <groupId>com.ferricstore</groupId>
+      <groupId>io.github.ferricstore</groupId>
       <artifactId>ferricstore-java</artifactId>
       <version>${project.version}</version>
     </dependency>

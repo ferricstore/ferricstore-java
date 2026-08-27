@@ -2,6 +2,7 @@ package com.ferricstore;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,7 +19,11 @@ final class Resp {
             throw new FerricStoreException(
                     "expected RESP array, got " + value.getClass().getSimpleName());
         }
-        return list.stream().map(item -> record(item, codec)).toList();
+        List<FlowRecord> records = new ArrayList<>(list.size());
+        for (Object item : list) {
+            records.add(record(item, codec));
+        }
+        return Collections.unmodifiableList(records);
     }
 
     static FlowRecord optionalRecord(Object value, Codec codec) {
@@ -36,12 +41,26 @@ final class Resp {
 
     static FlowRecord record(Object value, Codec codec) {
         Map<String, Object> map = map(value);
+        Object error = decodeStructured(codec, map.get("error"));
+        Map<String, Object> errorFields = stringObjectMap(error);
+        String failureReason = optionalString(errorFields.get("reason"));
+        Long maxActiveMs = positiveLong(map.get("max_active_ms"));
+        if (maxActiveMs == null) {
+            maxActiveMs = positiveLong(errorFields.get("max_active_ms"));
+        }
+        if ("max_active_ms".equals(failureReason) && maxActiveMs == null) {
+            throw new FerricStoreException(
+                    "FLOW max_active_ms failure response is missing a positive max_active_ms");
+        }
         return new FlowRecord(
                 string(map.get("id")),
                 string(map.get("type")),
                 string(map.get("state")),
                 optionalString(map.get("partition_key")),
                 decode(codec, map.get("payload")),
+                error,
+                failureReason,
+                maxActiveMs,
                 optionalString(map.get("lease_token")),
                 number(map.get("fencing_token")),
                 number(map.get("version")),
@@ -50,7 +69,29 @@ final class Resp {
                 optionalString(map.get("correlation_id")),
                 decodeValueMap(codec, map.get("values")),
                 stringObjectMap(map.get("value_refs")),
+                stringObjectMap(map.get("attributes")),
+                stringObjectMap(map.get("state_meta")),
                 map);
+    }
+
+    private static Object decodeStructured(Codec codec, Object value) {
+        return value instanceof byte[] bytes ? codec.decode(bytes) : normalize(value);
+    }
+
+    private static Long positiveLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        long parsed;
+        try {
+            parsed =
+                    value instanceof Number number
+                            ? number.longValue()
+                            : Long.parseLong(string(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+        return parsed > 0 ? parsed : null;
     }
 
     static List<ClaimedItem> claimedItems(Object value) {
@@ -61,15 +102,24 @@ final class Resp {
             throw new FerricStoreException(
                     "expected RESP array, got " + value.getClass().getSimpleName());
         }
-        return list.stream().map(Resp::claimedItem).toList();
+        List<ClaimedItem> items = new ArrayList<>(list.size());
+        for (Object item : list) {
+            items.add(claimedItem(item));
+        }
+        return Collections.unmodifiableList(items);
     }
 
     static ClaimedItem claimedItem(Object value) {
         if (value instanceof List<?> list) {
-            if (list.size() < 4) {
-                throw new FerricStoreException(
-                        "expected claimed item array with at least 4 fields");
+            if (list.size() < 4 || list.size() > 6) {
+                throw new FerricStoreException("expected claimed item array with 4 to 6 fields");
             }
+            Map<String, Object> legacyAttributes =
+                    list.size() > 4 && mapLike(list.get(4))
+                            ? stringObjectMap(list.get(4))
+                            : Map.of();
+            Map<String, Object> attributes =
+                    list.size() > 5 ? stringObjectMap(list.get(5)) : legacyAttributes;
             return new ClaimedItem(
                     string(list.get(0)),
                     string(list.get(2)),
@@ -77,8 +127,11 @@ final class Resp {
                     optionalString(list.get(1)),
                     "",
                     "running",
-                    list.size() > 4 ? optionalString(list.get(4)) : null,
-                    null);
+                    list.size() > 4 && legacyAttributes.isEmpty()
+                            ? optionalString(list.get(4))
+                            : null,
+                    null,
+                    attributes);
         }
         Map<String, Object> map = map(value);
         return new ClaimedItem(
@@ -91,7 +144,14 @@ final class Resp {
                         ? "running"
                         : optionalString(map.get("state")),
                 optionalString(map.get("run_state")),
-                map.get("payload"));
+                map.get("payload"),
+                stringObjectMap(map.get("attributes")));
+    }
+
+    private static boolean mapLike(Object value) {
+        return value instanceof Map<?, ?>
+                || value instanceof List<?> list
+                        && ((!list.isEmpty() && isPairList(list)) || list.size() % 2 == 0);
     }
 
     static Map<String, Object> map(Object value) {
@@ -162,7 +222,23 @@ final class Resp {
             return number.longValue();
         }
         String text = string(value);
-        return text.isEmpty() ? 0 : Long.parseLong(text);
+        if (text.isEmpty()) {
+            return 0;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException error) {
+            throw new FerricStoreException("expected integer response, got: " + text, error);
+        }
+    }
+
+    static double decimal(Object value) {
+        String text = string(value);
+        try {
+            return Double.parseDouble(text);
+        } catch (NumberFormatException error) {
+            throw new FerricStoreException("expected decimal response, got: " + text, error);
+        }
     }
 
     static Object decode(Codec codec, Object value) {
@@ -172,6 +248,26 @@ final class Resp {
 
     static List<Object> list(Object value) {
         return value instanceof List<?> list ? new ArrayList<>(list) : List.of();
+    }
+
+    static List<Map<String, Object>> maps(Object value) {
+        if (value == null) {
+            return List.of();
+        }
+        if (!(value instanceof List<?> list)) {
+            throw new FerricStoreException(
+                    "expected RESP array, got " + value.getClass().getSimpleName());
+        }
+        return list.stream().map(Resp::map).toList();
+    }
+
+    static Map<String, Object> optionalMap(Object value) {
+        if (value == null
+                || value instanceof List<?> list && list.isEmpty()
+                || value instanceof Map<?, ?> map && map.isEmpty()) {
+            return null;
+        }
+        return map(value);
     }
 
     static Map<String, Object> parseKv(Object value) {
@@ -184,6 +280,9 @@ final class Resp {
     }
 
     static Map<Object, Object> testMap(Object... pairs) {
+        if ((pairs.length & 1) != 0) {
+            throw new IllegalArgumentException("map entries must contain key/value pairs");
+        }
         Map<Object, Object> map = new HashMap<>();
         for (int i = 0; i < pairs.length; i += 2) {
             map.put(pairs[i], pairs[i + 1]);

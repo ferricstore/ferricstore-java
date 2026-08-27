@@ -4,11 +4,13 @@ Thanks for helping improve the FerricStore Java SDK.
 
 ## Development Setup
 
-Use Java 21 and Maven.
+Artifacts target Java 17. Local quality tooling uses Java 21 because current Checkstyle and Error Prone releases require it; CI executes the SDK on Java 17, 21, and 25.
 
 ```bash
 mise install
-mise exec -- mvn test
+mise run test
+mise run test:java17
+mise run coverage
 ```
 
 The Maven reactor builds:
@@ -25,13 +27,16 @@ For examples and integration testing:
 ```bash
 docker compose up -d ferricstore
 scripts/wait-for-ferricstore.sh
-FERRICSTORE_INTEGRATION=1 mise exec -- mvn -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest test
+FERRICSTORE_INTEGRATION=1 mise exec -- mvn -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test
 docker compose down -v
 ```
 
 ## Design Rules
 
-- Keep the SDK thin over FerricStore RESP commands.
+- Keep the command API independent from the native TCP/TLS and HTTP/HTTPS transport layers.
+- Keep the core SDK framework-neutral; Spring modules are optional adapters.
+- Keep worker polling application-controlled. Reusable sessions may own execution resources but must not create hidden global schedulers.
+- Never close an application-supplied executor, and keep Java 21 features behind Java 17-safe adapters.
 - Prefer explicit FerricFlow outcomes over replay, proxies, or hidden instrumentation.
 - Preserve the escape hatch: anything missing from typed helpers must still work through `client.command(...)`.
 - Add tests for command shape when adding a typed wrapper.
@@ -42,7 +47,7 @@ docker compose down -v
 Run the strict local gate before opening a release PR:
 
 ```bash
-mise exec -- mvn -P quality verify
+mise run quality
 ```
 
 The `quality` profile fails on:
@@ -54,11 +59,18 @@ The `quality` profile fails on:
 - Checkstyle source hygiene violations
 - PMD correctness, security, performance, and concurrency violations
 - SpotBugs findings at `Max` effort and `Low` threshold
+- JaCoCo coverage below 80% lines / 60% branches in the core SDK, 90% / 80% in
+  the statemachine adapter, or 75% / 50% in the Spring Boot starter
+
+`mise run coverage` writes each module's browsable report to
+`MODULE/target/site/jacoco/index.html`. Compile-checked examples and benchmark
+launchers are excluded from the gate.
 
 ## Pull Request Checklist
 
 - Add or update tests.
 - Update README/docs when changing public API.
-- Run `mise exec -- mvn test`.
-- Run `mise exec -- mvn -P quality verify`.
+- Run `mise run test:java17`.
+- Run `mise run test`.
+- Run `mise run quality`.
 - Run `mise exec -- mvn -DskipTests package` for packaging changes.

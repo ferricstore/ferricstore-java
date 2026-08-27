@@ -3,9 +3,8 @@ package com.ferricstore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.function.Function;
@@ -24,26 +23,17 @@ final class WorkerExecutors {
     static <T, R> List<R> run(
             List<T> items,
             int concurrency,
-            boolean virtualThreads,
-            ExecutorService executor,
+            WorkerExecutorLease executorLease,
             Function<T, R> task) {
         requirePositive("concurrency", concurrency);
         if (items.isEmpty()) {
             return List.of();
         }
-        if (concurrency == 1) {
+        if (executorLease.executor() == null) {
             return items.stream().map(task).toList();
         }
 
-        ExecutorService service = executor;
-        boolean ownsExecutor = service == null;
-        if (service == null) {
-            service =
-                    virtualThreads
-                            ? Executors.newVirtualThreadPerTaskExecutor()
-                            : Executors.newFixedThreadPool(concurrency);
-        }
-
+        List<Future<R>> futures = List.of();
         try {
             Semaphore permits = new Semaphore(concurrency);
             List<Callable<R>> calls = new ArrayList<>(items.size());
@@ -65,7 +55,7 @@ final class WorkerExecutors {
                             }
                         });
             }
-            List<Future<R>> futures = service.invokeAll(calls);
+            futures = executorLease.submitAll(calls);
             List<R> results = new ArrayList<>(futures.size());
             for (Future<R> future : futures) {
                 results.add(future.get());
@@ -76,10 +66,10 @@ final class WorkerExecutors {
             throw new FerricStoreException("worker interrupted", e);
         } catch (ExecutionException e) {
             throw new FerricStoreException("worker task failed", e);
+        } catch (CancellationException e) {
+            throw new FerricStoreException("worker task cancelled", e);
         } finally {
-            if (ownsExecutor) {
-                service.shutdown();
-            }
+            executorLease.completeBatch(futures);
         }
     }
 }

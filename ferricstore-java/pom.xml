@@ -5,9 +5,9 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>com.ferricstore</groupId>
+    <groupId>io.github.ferricstore</groupId>
     <artifactId>ferricstore-java-parent</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.4</version>
   </parent>
 
   <artifactId>ferricstore-java</artifactId>
@@ -15,19 +15,21 @@
   <description>Java SDK for FerricStore and FerricFlow commands.</description>
 
   <properties>
+    <jacoco.line.minimum>0.80</jacoco.line.minimum>
+    <jacoco.branch.minimum>0.60</jacoco.branch.minimum>
     <spotbugs.skip>false</spotbugs.skip>
   </properties>
 
   <dependencies>
     <dependency>
-      <groupId>redis.clients</groupId>
-      <artifactId>jedis</artifactId>
-      <version>${jedis.version}</version>
-    </dependency>
-    <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>${jackson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.msgpack</groupId>
+      <artifactId>msgpack-core</artifactId>
+      <version>${msgpack.version}</version>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>

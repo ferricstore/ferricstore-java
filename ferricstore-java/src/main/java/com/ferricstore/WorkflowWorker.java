@@ -96,6 +96,20 @@ public final class WorkflowWorker {
     }
 
     public int runOnce() {
+        try (WorkflowWorkerSession session = openSession()) {
+            return session.runOnce();
+        }
+    }
+
+    public WorkflowWorkerSession openSession() {
+        return new WorkflowWorkerSession(this);
+    }
+
+    WorkerExecutorLease openExecutorLease() {
+        return WorkerExecutorLease.create(concurrency, virtualThreads, executor);
+    }
+
+    int runOnce(WorkerExecutorLease executorLease) {
         int applied = 0;
         for (String state : states) {
             WorkflowHandler handler = handlers.get(state);
@@ -113,8 +127,7 @@ public final class WorkflowWorker {
                     WorkerExecutors.run(
                                     jobs,
                                     concurrency,
-                                    virtualThreads,
-                                    executor,
+                                    executorLease,
                                     job -> apply(job, state, handler))
                             .size();
         }

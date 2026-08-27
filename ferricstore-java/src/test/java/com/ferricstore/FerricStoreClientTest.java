@@ -10,9 +10,93 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 final class FerricStoreClientTest {
+    @Test
+    void rawAsyncSurfaceCoversCommandsPipelinesAndFlowQueries() throws Exception {
+        FakeExecutor executor = new FakeExecutor("PONG", "one", "two", Map.of("version", "FQL1"));
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        assertEquals("PONG", client.commandAsync("PING").get(1, TimeUnit.SECONDS));
+        assertEquals(
+                List.of("one", "two"),
+                client.pipelineAsync(List.of(List.of("ECHO", "one"), List.of("ECHO", "two")))
+                        .get(1, TimeUnit.SECONDS));
+        assertEquals(
+                "FQL1",
+                client.flowQueryAsync("FROM flows", Map.of())
+                        .get(1, TimeUnit.SECONDS)
+                        .get("version"));
+    }
+
+    @Test
+    void rawCommandsPreserveTheNullArgumentErrorContract() {
+        FerricStoreClient client = FerricStoreClient.fromExecutor(new FakeExecutor("unused"));
+        List<Object> command = new ArrayList<>(List.of("SET", "key"));
+        command.add(null);
+
+        IllegalArgumentException error =
+                assertThrows(IllegalArgumentException.class, () -> client.command(command));
+
+        assertEquals("Redis command argument cannot be null at index 2", error.getMessage());
+    }
+
+    @Test
+    void transportOptionsMustMatchTheEndpointScheme() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        FerricStoreClient.connect(
+                                "ferric://127.0.0.1:6388",
+                                new RawCodec(),
+                                HttpTransportOptions.defaults()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        FerricStoreClient.connect(
+                                "https://127.0.0.1:8443",
+                                new RawCodec(),
+                                NativeTransportOptions.defaults()));
+    }
+
+    @Test
+    void retryRejectsNamedValueMutationsThatOssDoesNotSupport() {
+        FerricStoreClient client = FerricStoreClient.fromExecutor(new FakeExecutor("unused"));
+        FlowMutationFields dropValue = FlowMutationFields.builder().dropValue("scratch").build();
+
+        UnsupportedOperationException single =
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () ->
+                                client.retry(
+                                        RetryOptions.builder("flow-1", "lease-1", 1)
+                                                .value("detail", "value")
+                                                .build()));
+        UnsupportedOperationException many =
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () ->
+                                client.retryMany(
+                                        RetryManyOptions.builder(
+                                                        List.of(
+                                                                new ClaimedItem(
+                                                                        "flow-1",
+                                                                        "lease-1",
+                                                                        1,
+                                                                        "tenant-a")))
+                                                .mutationFields(dropValue)
+                                                .build()));
+
+        assertEquals(
+                "FLOW.RETRY does not support named-value mutations in FerricStore OSS",
+                single.getMessage());
+        assertEquals(
+                "FLOW.RETRY_MANY does not support named-value mutations in FerricStore OSS",
+                many.getMessage());
+    }
+
     @Test
     void createBuildsCommandDefaults() {
         FakeExecutor executor = new FakeExecutor("OK");
@@ -178,7 +262,7 @@ final class FerricStoreClientTest {
                         10L),
                 executor.last());
         assertEquals(1, jobs.size());
-        FlowRecord job = jobs.getFirst();
+        FlowRecord job = jobs.get(0);
         assertEquals("flow-1", job.id());
         assertEquals("order", job.type());
         assertEquals("created", job.state());
@@ -337,6 +421,28 @@ final class FerricStoreClientTest {
     }
 
     @Test
+    void rejectsClaimedCompactRowsWithUnknownTrailingFields() {
+        FakeExecutor executor =
+                new FakeExecutor(
+                        List.of(
+                                List.of(
+                                        "flow-1",
+                                        "p1",
+                                        "lease-1",
+                                        9L,
+                                        "created",
+                                        Map.of("tenant", "acme"),
+                                        "unexpected")));
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        assertThrows(
+                FerricStoreException.class,
+                () ->
+                        client.claimJobs(
+                                ClaimDueOptions.builder("order", "worker-1").nowMs(100).build()));
+    }
+
+    @Test
     void reclaimBuildsRunningLeaseCommandShape() {
         FakeExecutor executor =
                 new FakeExecutor(
@@ -377,9 +483,9 @@ final class FerricStoreClientTest {
                         "NOPAYLOAD"),
                 executor.last());
         assertEquals(1, jobs.size());
-        assertEquals("flow-1", jobs.getFirst().id());
-        assertEquals("lease-1", jobs.getFirst().leaseToken());
-        assertEquals(3L, jobs.getFirst().fencingToken());
+        assertEquals("flow-1", jobs.get(0).id());
+        assertEquals("lease-1", jobs.get(0).leaseToken());
+        assertEquals(3L, jobs.get(0).fencingToken());
     }
 
     @Test
@@ -467,11 +573,12 @@ final class FerricStoreClientTest {
                                 "done",
                                 List.of(
                                         new FencedItem("a", 1, "la", "p1"),
-                                        new FencedItem("b", 2, "lb", "p2")))
+                                        new FencedItem("b", 2, "p2")))
                         .payload(bytes("next"))
                         .priority(5)
                         .nowMs(100)
                         .independent(true)
+                        .returnOkOnSuccess(true)
                         .build());
 
         assertArgs(
@@ -488,6 +595,8 @@ final class FerricStoreClientTest {
                         100L,
                         "INDEPENDENT",
                         "true",
+                        "RETURN",
+                        "OK_ON_SUCCESS",
                         "ITEMS",
                         "a",
                         "p1",
@@ -496,7 +605,7 @@ final class FerricStoreClientTest {
                         "b",
                         "p2",
                         2L,
-                        "lb"),
+                        "-"),
                 executor.last());
     }
 
@@ -568,6 +677,27 @@ final class FerricStoreClientTest {
                                                 .build()));
 
         assertEquals("mixed spawnChildren items require partition key", err.getMessage());
+    }
+
+    @Test
+    void spawnChildrenMixedUsesUnambiguousMappedItems() {
+        FakeExecutor executor = new FakeExecutor("OK");
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+
+        client.spawnChildren(
+                SpawnChildrenOptions.builder(
+                                "parent-1",
+                                List.of(
+                                        new ChildSpec("first", "resize", bytes("one"), "p1"),
+                                        new ChildSpec("second", "resize", bytes("two"), "p2")))
+                        .nowMs(100)
+                        .build());
+
+        List<Object> command = executor.last();
+        int itemsAt = command.indexOf("ITEMS_MAPS");
+        assertEquals(2, command.get(itemsAt + 1));
+        assertEquals("p1", ((Map<?, ?>) command.get(itemsAt + 2)).get("partition_key"));
+        assertEquals("p2", ((Map<?, ?>) command.get(itemsAt + 3)).get("partition_key"));
     }
 
     @Test
@@ -644,7 +774,7 @@ final class FerricStoreClientTest {
         }
     }
 
-    private static final class FakeExecutor implements RedisExecutor {
+    private static final class FakeExecutor implements CommandExecutor {
         private final List<Object> responses = new ArrayList<>();
         private final List<List<Object>> calls = new ArrayList<>();
 
@@ -661,7 +791,7 @@ final class FerricStoreClientTest {
         }
 
         private List<Object> last() {
-            return calls.getLast();
+            return calls.get(calls.size() - 1);
         }
     }
 }

@@ -6,11 +6,47 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  validate:
+    name: release integration gates java-${{ matrix.java-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java-version: [17, 21]
+    env:
+      FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.12@sha256:3aef2c4200dff987a5797c08548582136d827838ccc0286aef5a00e8f4f6aa62
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java-version }}
+          cache: maven
+      - if: matrix.java-version == 17
+        run: mvn -B test
+      - if: matrix.java-version == 21
+        run: mvn -B -P quality verify
+      - run: docker compose up -d ferricstore
+      - run: scripts/wait-for-ferricstore.sh
+      - run: >-
+          mvn -B -pl ferricstore-java -am
+          -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test
+        env:
+          FERRICSTORE_INTEGRATION: "1"
+      - if: always()
+        run: docker compose logs ferricstore
+      - if: always()
+        run: docker compose down -v
+      - run: scripts/run-http-integration.sh
+
   maven-central:
     name: publish maven central
+    needs: validate
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -25,11 +61,15 @@ jobs:
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: GPG_PASSPHRASE
       - run: mvn -B -P quality verify
-      - run: mvn -B -P release deploy
+      - run: >-
+          mvn -B -P release
+          -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter
+          -am deploy
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+      - run: scripts/verify-release-bundle.sh
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
