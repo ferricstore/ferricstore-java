@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 final class HttpIntegrationReleaseContractTest {
     private static final Path REPOSITORY = Path.of("..").toAbsolutePath().normalize();
     private static final String RELEASE_IMAGE =
-            "quay.io/ferricstore/ferricstore:0.11.12@sha256:"
-                    + "3aef2c4200dff987a5797c08548582136d827838ccc0286aef5a00e8f4f6aa62";
+            "quay.io/ferricstore/ferricstore:0.11.14@sha256:"
+                    + "f7d29befefa15bce4b3755bf786cf7620c814f13bbd336c0d9955581b323b60e";
     private static final String INTEGRATION_TESTS =
             "-Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,"
                     + "FerricStoreFlowArgumentsIntegrationTest,"
