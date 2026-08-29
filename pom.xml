@@ -54,7 +54,7 @@
     <jacoco.skip>false</jacoco.skip>
     <jacoco.line.minimum>0.75</jacoco.line.minimum>
     <jacoco.branch.minimum>0.50</jacoco.branch.minimum>
-    <spring-boot.version>4.1.0</spring-boot.version>
+    <spring-boot.version>4.1.1</spring-boot.version>
     <spring-statemachine.version>4.0.2</spring-statemachine.version>
     <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
     <checkstyle.version>14.0.0</checkstyle.version>
