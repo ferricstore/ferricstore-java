@@ -550,8 +550,7 @@ final class DurableSteps {
         }
         return failure instanceof StaleLeaseException
                 || failure instanceof FlowWrongStateException
-                || failure instanceof FlowNotFoundException
-                || failure instanceof InvalidCommandException;
+                || failure instanceof FlowNotFoundException;
     }
 
     private static DurableMutationOutcomeUnknownException unknown(

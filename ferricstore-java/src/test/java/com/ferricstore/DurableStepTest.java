@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -490,6 +491,24 @@ final class DurableStepTest {
                                 "charge-customer:v1",
                                 () -> "provider-42",
                                 "schedule_warning"));
+
+        InvalidCommandException invalidCommand =
+                new InvalidCommandException("commit command is invalid");
+        FerricStoreClient invalidCommandClient =
+                FerricStoreClient.fromExecutor(
+                        new ScriptedExecutor(recordResponse("charge", Map.of()), invalidCommand),
+                        new StringCodec());
+
+        InvalidCommandException actual =
+                assertThrows(
+                        InvalidCommandException.class,
+                        () ->
+                                invalidCommandClient.step(
+                                        claim(),
+                                        "charge-customer:v1",
+                                        () -> "provider-42",
+                                        "schedule_warning"));
+        assertSame(invalidCommand, actual);
     }
 
     @Test
