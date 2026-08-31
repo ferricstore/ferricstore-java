@@ -21,18 +21,30 @@ public final class OrderWorkflowExample {
             order.state(
                     "created",
                     ctx -> {
-                        LOG.log(
-                                System.Logger.Level.INFO,
-                                "charge {0} {1}",
-                                ctx.id(),
-                                ctx.payload());
+                        ChargeReceipt receipt =
+                                ctx.step(
+                                        "charge-customer:v1",
+                                        () ->
+                                                chargeCustomer(
+                                                        ctx.payload(),
+                                                        ctx.id() + ":charge-customer:v1"),
+                                        "charged",
+                                        ChargeReceipt.class);
+                        LOG.log(System.Logger.Level.INFO, "charged {0}", receipt.providerId());
                         return Outcomes.transition("charged");
                     });
 
             order.state(
                     "charged",
                     ctx -> {
-                        LOG.log(System.Logger.Level.INFO, "receipt {0}", ctx.id());
+                        ctx.step(
+                                "send-receipt:v1",
+                                () -> {
+                                    sendReceipt(ctx.id(), ctx.id() + ":send-receipt:v1");
+                                    return null;
+                                },
+                                "done",
+                                Void.class);
                         return Outcomes.complete(Map.of("ok", true));
                     });
 
@@ -44,4 +56,26 @@ public final class OrderWorkflowExample {
             LOG.log(System.Logger.Level.INFO, "applied={0}", applied);
         }
     }
+
+    private static ChargeReceipt chargeCustomer(Object order, String idempotencyKey) {
+        // A real provider call must receive the same idempotency key on every retry.
+        return new ChargeReceipt("provider:" + idempotencyKey, order);
+    }
+
+    private static void sendReceipt(String orderId, String idempotencyKey) {
+        // The provider must deduplicate this stable key if the worker stops before the commit.
+        LOG.log(
+                System.Logger.Level.INFO,
+                "receipt order={0} idempotency-key={1}",
+                orderId,
+                idempotencyKey);
+    }
+
+    /**
+     * Example provider result that can be deserialized again during durable-step replay.
+     *
+     * @param providerId the external provider's stable result identity
+     * @param order the order payload returned with the provider result
+     */
+    public record ChargeReceipt(String providerId, Object order) {}
 }

@@ -756,6 +756,7 @@ final class FerricStoreFlowArgumentsIntegrationTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     void stepAndRecurringScheduleArgumentFormsRoundTrip() {
         assumeIntegration();
 

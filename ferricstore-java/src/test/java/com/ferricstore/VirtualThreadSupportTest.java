@@ -61,6 +61,32 @@ final class VirtualThreadSupportTest {
         }
     }
 
+    @Test
+    void virtualWorkerPreservesAnUnknownDurableMutationOutcome() {
+        if (Runtime.version().feature() < 21) {
+            return;
+        }
+        DurableMutationOutcomeUnknownException expected =
+                new DurableMutationOutcomeUnknownException(
+                        "FLOW.STEP_CONTINUE", new NativeProtocolException("response lost"));
+
+        try (WorkerExecutorLease workers = WorkerExecutorLease.create(2, true, null)) {
+            DurableMutationOutcomeUnknownException actual =
+                    assertThrows(
+                            DurableMutationOutcomeUnknownException.class,
+                            () ->
+                                    WorkerExecutors.run(
+                                            List.of("flow-1"),
+                                            2,
+                                            workers,
+                                            ignored -> {
+                                                throw expected;
+                                            }));
+
+            assertEquals(expected, actual);
+        }
+    }
+
     private static boolean isCurrentThreadVirtual() throws Exception {
         Method isVirtual = Thread.class.getMethod("isVirtual");
         return (boolean) isVirtual.invoke(Thread.currentThread());

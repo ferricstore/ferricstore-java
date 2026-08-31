@@ -3,7 +3,6 @@ package com.ferricstore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
@@ -57,19 +56,52 @@ final class WorkerExecutors {
             }
             futures = executorLease.submitAll(calls);
             List<R> results = new ArrayList<>(futures.size());
+            Throwable firstFailure = null;
             for (Future<R> future : futures) {
-                results.add(future.get());
+                try {
+                    results.add(future.get());
+                } catch (ExecutionException | java.util.concurrent.CancellationException failure) {
+                    if (firstFailure == null) {
+                        firstFailure =
+                                failure instanceof ExecutionException execution
+                                        ? AsyncFutures.unwrap(execution)
+                                        : failure;
+                    }
+                }
+            }
+            executorLease.awaitTaskBodies(futures);
+            if (firstFailure != null) {
+                throw propagate(firstFailure);
             }
             return results;
         } catch (InterruptedException e) {
+            futures.forEach(future -> future.cancel(true));
+            boolean interruptedAgain = false;
+            while (true) {
+                try {
+                    executorLease.awaitTaskBodies(futures);
+                    break;
+                } catch (InterruptedException ignored) {
+                    interruptedAgain = true;
+                }
+            }
             Thread.currentThread().interrupt();
+            if (interruptedAgain) {
+                e.addSuppressed(new InterruptedException("interrupted again while draining tasks"));
+            }
             throw new FerricStoreException("worker interrupted", e);
-        } catch (ExecutionException e) {
-            throw new FerricStoreException("worker task failed", e);
-        } catch (CancellationException e) {
-            throw new FerricStoreException("worker task cancelled", e);
         } finally {
             executorLease.completeBatch(futures);
         }
+    }
+
+    private static RuntimeException propagate(Throwable failure) {
+        if (failure instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        return new FerricStoreException("worker task failed", failure);
     }
 }

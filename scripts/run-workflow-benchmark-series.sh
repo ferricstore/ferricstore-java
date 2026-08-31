@@ -12,7 +12,7 @@ for command in java mvn; do
 done
 
 if [ "${FERRICSTORE_BENCHMARK_SKIP_BUILD:-false}" != "true" ]; then
-  mvn -q -pl ferricstore-examples -am -DskipTests package
+  mvn -q -pl ferricstore-examples -am -DskipTests -Djacoco.skip=true install
 fi
 
 if [ -n "${FERRICSTORE_BENCHMARK_CLASSPATH:-}" ]; then

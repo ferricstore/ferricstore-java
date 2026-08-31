@@ -5,7 +5,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** A FerricStore command error returned inside a successful HTTP batch response. */
-public final class HttpCommandException extends FerricStoreException {
+public final class HttpCommandException extends FerricStoreException
+        implements RequestDeliveryFailure {
     private static final long serialVersionUID = 1L;
 
     private final String errorCode;
@@ -47,5 +48,34 @@ public final class HttpCommandException extends FerricStoreException {
 
     public Map<String, Object> raw() {
         return raw == null ? Map.of() : raw;
+    }
+
+    @Override
+    public RequestDelivery delivery() {
+        if (safeToRetry || knownRejectionCode(errorCode)) {
+            return RequestDelivery.REJECTED;
+        }
+        return RequestDelivery.UNKNOWN;
+    }
+
+    private static boolean knownRejectionCode(String code) {
+        return switch (code == null ? "" : code) {
+            case "auth",
+                    "unauthenticated",
+                    "unauthorized",
+                    "noperm",
+                    "forbidden",
+                    "bad_request",
+                    "invalid_command",
+                    "invalid_request",
+                    "not_found",
+                    "flow_not_found",
+                    "stale_lease",
+                    "wrong_state",
+                    "conflict",
+                    "request_too_large" ->
+                    true;
+            default -> false;
+        };
     }
 }

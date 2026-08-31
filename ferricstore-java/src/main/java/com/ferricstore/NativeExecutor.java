@@ -181,7 +181,12 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
     @Override
     public CompletableFuture<Object> executeAsync(List<Object> args) {
-        PreparedCommand prepared = prepareCommand(args, true);
+        PreparedCommand prepared;
+        try {
+            prepared = prepareCommand(args, true);
+        } catch (RuntimeException failure) {
+            return AsyncFutures.failed(notSent("failed to prepare native command", failure));
+        }
         if (prepared.flags() != 0) {
             return requestWithRetryAsync(
                     prepared.opcode(),
@@ -199,9 +204,13 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             return CompletableFuture.completedFuture(List.of());
         }
         List<PreparedPipelineBatch> batches = new ArrayList<>();
-        for (int start = 0; start < commands.size(); start += MAX_PIPELINE_COMMANDS) {
-            int end = Math.min(start + MAX_PIPELINE_COMMANDS, commands.size());
-            batches.add(preparePipelineBatch(commands.subList(start, end)));
+        try {
+            for (int start = 0; start < commands.size(); start += MAX_PIPELINE_COMMANDS) {
+                int end = Math.min(start + MAX_PIPELINE_COMMANDS, commands.size());
+                batches.add(preparePipelineBatch(commands.subList(start, end)));
+            }
+        } catch (RuntimeException failure) {
+            return AsyncFutures.failed(notSent("failed to prepare native pipeline", failure));
         }
         List<Object> results = new ArrayList<>(commands.size());
         CompletableFuture<Void> sequence = CompletableFuture.completedFuture(null);
@@ -418,8 +427,10 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         try {
             body = NativeValueCodec.encode(payload, MAX_REQUEST_BYTES);
             validateUnauthenticatedSize(body.length);
+        } catch (NativeProtocolException error) {
+            return AsyncFutures.failed(error.asNotSent());
         } catch (RuntimeException error) {
-            return AsyncFutures.failed(error);
+            return AsyncFutures.failed(notSent("failed to encode native request", error));
         }
         return requestWithRetryAsync(opcode, laneId, body, 0);
     }
@@ -428,8 +439,10 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             int opcode, long laneId, byte[] body, int flags) {
         try {
             validateRequestBody(body);
+        } catch (NativeProtocolException error) {
+            return AsyncFutures.failed(error.asNotSent());
         } catch (RuntimeException error) {
-            return AsyncFutures.failed(error);
+            return AsyncFutures.failed(notSent("invalid native request body", error));
         }
         CompletableFuture<Object> result = new CompletableFuture<>();
         requestAttempt(opcode, laneId, body, flags, 0, result);
@@ -525,7 +538,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                     requestAsync(NativeProtocol.OP_FLOW_QUERY, laneId, payload),
                     NativeResponseCodec::requireOk);
         } catch (RuntimeException error) {
-            return AsyncFutures.failed(error);
+            return AsyncFutures.failed(notSent("failed to prepare native Flow query", error));
         }
     }
 
@@ -545,7 +558,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             body = NativeValueCodec.encode(payload, MAX_REQUEST_BYTES);
             validateUnauthenticatedSize(body.length);
         } catch (RuntimeException error) {
-            return AsyncFutures.failed(error);
+            return AsyncFutures.failed(notSent("failed to encode native request", error));
         }
         return requestEncodedAsync(opcode, laneId, body, 0);
     }
@@ -553,27 +566,29 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private CompletableFuture<NativeResponseCodec.Response> requestEncodedAsync(
             int opcode, long laneId, byte[] body, int flags) {
         if (closed.get()) {
-            return AsyncFutures.failed(new NativeProtocolException("native connection is closed"));
+            return AsyncFutures.failed(
+                    NativeProtocolException.notSent("native connection is closed"));
         }
         try {
             validateRequestBody(body);
         } catch (RuntimeException error) {
-            return AsyncFutures.failed(error);
+            return AsyncFutures.failed(notSent("invalid native request body", error));
         }
         if (!pendingSlots.tryAcquire()) {
             return AsyncFutures.failed(
-                    new NativeProtocolException("native pending request limit exceeded"));
+                    NativeProtocolException.notSent("native pending request limit exceeded"));
         }
         if (closed.get()) {
             pendingSlots.release();
-            return AsyncFutures.failed(new NativeProtocolException("native connection is closed"));
+            return AsyncFutures.failed(
+                    NativeProtocolException.notSent("native connection is closed"));
         }
         long requestId;
         try {
             requestId = nextRequestId();
         } catch (RuntimeException error) {
             pendingSlots.release();
-            return AsyncFutures.failed(error);
+            return AsyncFutures.failed(notSent("failed to allocate native request id", error));
         }
         NativeFrame.Identity identity = new NativeFrame.Identity(laneId, opcode, requestId);
         CompletableFuture<NativeResponseCodec.Response> wireResponse = new CompletableFuture<>();
@@ -607,7 +622,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
         if (closed.get() && removePending(requestId, request)) {
             wireResponse.completeExceptionally(
-                    new NativeProtocolException("native connection is closed"));
+                    NativeProtocolException.notSent("native connection is closed"));
             return result;
         }
 
@@ -623,6 +638,16 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             terminate(uncertain);
         }
         return result;
+    }
+
+    private static RuntimeException notSent(String message, RuntimeException failure) {
+        if (failure instanceof NativeProtocolException protocol) {
+            return protocol.asNotSent();
+        }
+        if (failure instanceof RequestDeliveryFailure) {
+            return failure;
+        }
+        return NativeProtocolException.notSent(message, failure);
     }
 
     private boolean removePending(long requestId, PendingRequest request) {
@@ -644,7 +669,8 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private void validateRequestBody(byte[] body) {
         Objects.requireNonNull(body, "native request body");
         if (body.length > MAX_REQUEST_BYTES) {
-            throw new NativeProtocolException("native request exceeds the maximum request size");
+            throw NativeProtocolException.notSent(
+                    "native request exceeds the maximum request size");
         }
         validateUnauthenticatedSize(body.length);
     }
@@ -778,7 +804,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                 && capabilities.authRequired()
                 && !authenticated.get()
                 && bodyBytes > NativeProtocol.UNAUTHENTICATED_MAX_FRAME_BYTES) {
-            throw new NativeProtocolException(
+            throw NativeProtocolException.notSent(
                     "authenticate before submitting requests larger than the unauthenticated 64 KiB limit");
         }
     }

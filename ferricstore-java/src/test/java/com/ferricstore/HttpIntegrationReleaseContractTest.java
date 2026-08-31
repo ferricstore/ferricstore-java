@@ -15,11 +15,13 @@ final class HttpIntegrationReleaseContractTest {
     private static final String INTEGRATION_TESTS =
             "-Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,"
                     + "FerricStoreFlowArgumentsIntegrationTest,"
-                    + "FerricStoreConcurrencyIntegrationTest";
+                    + "FerricStoreConcurrencyIntegrationTest,"
+                    + "DurableStepRecoveryIntegrationTest";
 
     @Test
     void ciReleaseAndDocumentationRequireAuthenticatedTlsHttpIntegration() throws IOException {
         String runner = repositoryFile("scripts/run-http-integration.sh");
+        String matrixRunner = repositoryFile("scripts/run-http-integration-matrix.sh");
         assertImmutableFerricStoreImages(runner);
         assertTrue(runner.contains(RELEASE_IMAGE));
         for (String required :
@@ -40,15 +42,19 @@ final class HttpIntegrationReleaseContractTest {
                     "unauthenticated HTTP request returned",
                     "FerricStoreIntegrationTest",
                     "FerricStoreFlowArgumentsIntegrationTest",
-                    "FerricStoreConcurrencyIntegrationTest"
+                    "FerricStoreConcurrencyIntegrationTest",
+                    "DurableStepRecoveryIntegrationTest"
                 }) {
             assertTrue(runner.contains(required), () -> "runner is missing " + required);
         }
+        assertTrue(matrixRunner.contains("for version in h1 h2"));
+        assertTrue(matrixRunner.contains("for format in json msgpack"));
+        assertTrue(matrixRunner.contains("FERRICSTORE_HTTP_VERSION=\"$version\""));
 
         for (String workflow :
                 new String[] {".github/workflows/test.yml", ".github/workflows/release.yml"}) {
             String contents = repositoryFile(workflow);
-            assertTrue(contents.contains("scripts/run-http-integration.sh"));
+            assertTrue(contents.contains("scripts/run-http-integration-matrix.sh"));
             assertTrue(contents.contains("@sha256:"));
             assertTrue(contents.contains(RELEASE_IMAGE));
             assertImmutableFerricStoreImages(contents);
@@ -113,9 +119,28 @@ final class HttpIntegrationReleaseContractTest {
                         "if: matrix.java-version == 17\n        run: mvn -B test"));
         assertTrue(
                 releaseValidation.contains(
-                        "if: matrix.java-version == 21\n        run: mvn -B -P quality verify"));
+                        "if: matrix.java-version == 21\n        run: mvn -B -Pquality verify"));
         assertTrue(releaseValidation.contains(INTEGRATION_TESTS));
-        assertTrue(releaseValidation.contains("scripts/run-http-integration.sh"));
+        assertTrue(releaseValidation.contains("scripts/run-http-integration-matrix.sh"));
+    }
+
+    @Test
+    void releaseChecksTheTagBeforePublishingAndShipsCurrentApiDocumentation() throws IOException {
+        String release = repositoryFile(".github/workflows/release.yml");
+        int guard = release.indexOf("scripts/verify-release-tag.sh");
+        int deploy = release.indexOf("-am deploy");
+        assertTrue(guard >= 0, "release workflow is missing the pre-publish tag guard");
+        assertTrue(guard < deploy, "release tag guard must run before Maven Central deploy");
+
+        String apiIndex = repositoryFile("docs/api/index.html");
+        assertTrue(apiIndex.contains("0.2.0 API"));
+        assertTrue(
+                Files.exists(
+                        REPOSITORY.resolve("docs/api/com/ferricstore/DurableStepResult.html")));
+        assertTrue(Files.exists(REPOSITORY.resolve("docs/api/com/ferricstore/ClaimedFlow.html")));
+        assertTrue(
+                Files.exists(
+                        REPOSITORY.resolve("docs/api/com/ferricstore/AsyncWorkflowHandler.html")));
     }
 
     private static void assertImmutableFerricStoreImages(String contents) {

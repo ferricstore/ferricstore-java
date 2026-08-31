@@ -18,7 +18,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
+import java.util.function.Supplier;
 
 public final class FerricStoreClient implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -41,6 +45,7 @@ public final class FerricStoreClient implements AutoCloseable {
     private final TopKStore topk;
     private final TDigestStore tdigest;
     private final FlowSteps flowSteps;
+    private final DurableSteps durableSteps;
     private final FlowInsights flowInsights;
     private final FlowSchedules flowSchedules;
     private final FlowGovernance flowGovernance;
@@ -65,6 +70,7 @@ public final class FerricStoreClient implements AutoCloseable {
         this.topk = new TopKStore(this);
         this.tdigest = new TDigestStore(this);
         this.flowSteps = new FlowSteps(executor, this.codec);
+        this.durableSteps = new DurableSteps(executor, this.codec);
         this.flowInsights = new FlowInsights(executor);
         this.flowSchedules = new FlowSchedules(executor);
         this.flowGovernance = new FlowGovernance(executor);
@@ -128,6 +134,15 @@ public final class FerricStoreClient implements AutoCloseable {
 
     public Codec codec() {
         return codec;
+    }
+
+    /** Returns the HTTP version observed for this client, or {@code null} for native clients. */
+    public java.net.http.HttpClient.Version observedHttpVersion() {
+        return executor instanceof HttpExecutor http ? http.observedVersion() : null;
+    }
+
+    CommandExecutor commandExecutor() {
+        return executor;
     }
 
     public Object command(Object... args) {
@@ -252,6 +267,234 @@ public final class FerricStoreClient implements AutoCloseable {
 
     public FlowSteps flowSteps() {
         return flowSteps;
+    }
+
+    /** Atomically advances a claimed workflow and returns its refreshed lease and fence. */
+    public ClaimedItem advance(ClaimedFlow job, String toState) {
+        return durableSteps.advance(DurableSteps.compact(job), toState);
+    }
+
+    /** Atomically advances a claimed workflow using explicit lease timing controls. */
+    public ClaimedItem advance(ClaimedFlow job, String toState, DurableStepOptions options) {
+        return durableSteps.advance(DurableSteps.compact(job), toState, options);
+    }
+
+    /** Atomically advances a claimed workflow without blocking for its response. */
+    public CompletableFuture<ClaimedItem> advanceAsync(ClaimedFlow job, String toState) {
+        return durableSteps.advanceAsync(DurableSteps.compact(job), toState);
+    }
+
+    /** Asynchronously advances a claim using explicit lease timing controls. */
+    public CompletableFuture<ClaimedItem> advanceAsync(
+            ClaimedFlow job, String toState, DurableStepOptions options) {
+        return durableSteps.advanceAsync(DurableSteps.compact(job), toState, options);
+    }
+
+    /**
+     * Executes and journals a named closure, advances the workflow, and returns its stored result.
+     *
+     * <p>The name must remain stable across retries. External operations must also use a stable
+     * provider idempotency key because a worker can stop after the external call succeeds but
+     * before FerricStore commits the journal entry.
+     */
+    public DurableStepResult<Object> step(
+            ClaimedFlow job, String name, Callable<?> run, String toState) {
+        return durableSteps.step(DurableSteps.compact(job), name, run, toState);
+    }
+
+    /** Executes a durable step using explicit lease timing controls. */
+    public DurableStepResult<Object> step(
+            ClaimedFlow job,
+            String name,
+            Callable<?> run,
+            String toState,
+            DurableStepOptions options) {
+        return durableSteps.step(DurableSteps.compact(job), name, run, toState, options);
+    }
+
+    /** Executes a durable step and decodes both first-run and replay results as {@code type}. */
+    public <T> DurableStepResult<T> step(
+            ClaimedFlow job,
+            String name,
+            Callable<? extends T> run,
+            String toState,
+            Class<T> type) {
+        return step(job, name, run, toState, type, DurableStepOptions.defaults());
+    }
+
+    /** Executes a typed durable step using explicit lease timing controls. */
+    public <T> DurableStepResult<T> step(
+            ClaimedFlow job,
+            String name,
+            Callable<? extends T> run,
+            String toState,
+            Class<T> type,
+            DurableStepOptions options) {
+        return durableSteps.step(DurableSteps.compact(job), name, run, toState, options, type);
+    }
+
+    /** Executes a durable step with a caller-supplied replay decoder. */
+    public <T> DurableStepResult<T> step(
+            ClaimedFlow job,
+            String name,
+            Callable<? extends T> run,
+            String toState,
+            DurableResultDecoder<T> resultDecoder) {
+        return step(job, name, run, toState, resultDecoder, DurableStepOptions.defaults());
+    }
+
+    /** Executes a custom-decoded durable step using explicit lease timing controls. */
+    public <T> DurableStepResult<T> step(
+            ClaimedFlow job,
+            String name,
+            Callable<? extends T> run,
+            String toState,
+            DurableResultDecoder<T> resultDecoder,
+            DurableStepOptions options) {
+        return durableSteps.step(
+                DurableSteps.compact(job), name, run, toState, options, resultDecoder);
+    }
+
+    /**
+     * Asynchronous durable-step API with the same replay and fencing semantics as {@link #step}.
+     */
+    public CompletableFuture<DurableStepResult<Object>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<?>> run,
+            String toState) {
+        return durableSteps.stepAsync(DurableSteps.compact(job), name, run, toState);
+    }
+
+    /** Asynchronously executes a durable step using explicit lease timing controls. */
+    public CompletableFuture<DurableStepResult<Object>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<?>> run,
+            String toState,
+            DurableStepOptions options) {
+        return durableSteps.stepAsync(DurableSteps.compact(job), name, run, toState, options);
+    }
+
+    /**
+     * Asynchronously executes a durable step and invokes the user closure on a caller-owned
+     * executor. The executor must dispatch instead of running the closure inline; the SDK rejects
+     * inline execution before application code runs and does not close the executor.
+     */
+    public CompletableFuture<DurableStepResult<Object>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<?>> run,
+            String toState,
+            DurableStepOptions options,
+            Executor closureExecutor) {
+        return durableSteps.stepAsync(
+                DurableSteps.compact(job), name, run, toState, options, closureExecutor);
+    }
+
+    /** Asynchronously executes a durable step with a type-safe replay result. */
+    public <T> CompletableFuture<DurableStepResult<T>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<? extends T>> run,
+            String toState,
+            Class<T> type) {
+        return stepAsync(
+                job,
+                name,
+                run,
+                toState,
+                type,
+                DurableStepOptions.defaults(),
+                java.util.concurrent.ForkJoinPool.commonPool());
+    }
+
+    /** Asynchronously executes a typed durable step with explicit timing controls. */
+    public <T> CompletableFuture<DurableStepResult<T>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<? extends T>> run,
+            String toState,
+            Class<T> type,
+            DurableStepOptions options) {
+        return stepAsync(
+                job,
+                name,
+                run,
+                toState,
+                type,
+                options,
+                java.util.concurrent.ForkJoinPool.commonPool());
+    }
+
+    /** Asynchronously executes a typed durable closure on a caller-owned, dispatching executor. */
+    public <T> CompletableFuture<DurableStepResult<T>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<? extends T>> run,
+            String toState,
+            Class<T> type,
+            DurableStepOptions options,
+            Executor closureExecutor) {
+        return durableSteps.stepAsync(
+                DurableSteps.compact(job), name, run, toState, options, closureExecutor, type);
+    }
+
+    /** Asynchronously executes a durable step with a caller-supplied replay decoder. */
+    public <T> CompletableFuture<DurableStepResult<T>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<? extends T>> run,
+            String toState,
+            DurableResultDecoder<T> resultDecoder) {
+        return stepAsync(
+                job,
+                name,
+                run,
+                toState,
+                resultDecoder,
+                DurableStepOptions.defaults(),
+                java.util.concurrent.ForkJoinPool.commonPool());
+    }
+
+    /** Asynchronously executes a custom-decoded durable step with explicit timing controls. */
+    public <T> CompletableFuture<DurableStepResult<T>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<? extends T>> run,
+            String toState,
+            DurableResultDecoder<T> resultDecoder,
+            DurableStepOptions options) {
+        return stepAsync(
+                job,
+                name,
+                run,
+                toState,
+                resultDecoder,
+                options,
+                java.util.concurrent.ForkJoinPool.commonPool());
+    }
+
+    /**
+     * Asynchronously executes a custom-decoded durable closure on a caller-owned, dispatching
+     * executor.
+     */
+    public <T> CompletableFuture<DurableStepResult<T>> stepAsync(
+            ClaimedFlow job,
+            String name,
+            Supplier<? extends CompletionStage<? extends T>> run,
+            String toState,
+            DurableResultDecoder<T> resultDecoder,
+            DurableStepOptions options,
+            Executor closureExecutor) {
+        return durableSteps.stepAsync(
+                DurableSteps.compact(job),
+                name,
+                run,
+                toState,
+                options,
+                closureExecutor,
+                resultDecoder);
     }
 
     public FlowInsights flowInsights() {
@@ -582,6 +825,11 @@ public final class FerricStoreClient implements AutoCloseable {
         return Resp.records(command(cmd), codec);
     }
 
+    CompletableFuture<List<FlowRecord>> claimDueAsyncForWorker(ClaimDueOptions options) {
+        List<Object> cmd = claimCommand("FLOW.CLAIM_DUE", options);
+        return AsyncFutures.map(commandAsync(cmd), response -> Resp.records(response, codec));
+    }
+
     public List<ClaimedItem> claimJobs(ClaimDueOptions options) {
         List<Object> cmd = claimCommand("FLOW.CLAIM_DUE", jobOnly(options));
         return Resp.claimedItems(command(cmd));
@@ -615,6 +863,38 @@ public final class FerricStoreClient implements AutoCloseable {
     }
 
     public Object transition(TransitionOptions options) {
+        Object response = command(transitionCommand(options));
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
+    }
+
+    public Object complete(CompleteOptions options) {
+        Object response = command(completeCommand(options));
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
+    }
+
+    public Object retry(RetryOptions options) {
+        Object response = command(retryCommand(options));
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
+    }
+
+    public Object fail(FailOptions options) {
+        Object response = command(failCommand(options));
+        return options.returnRecord()
+                ? recordOrGet(response, options.id(), options.partitionKey())
+                : response;
+    }
+
+    CompletableFuture<Object> transitionAsyncForWorker(TransitionOptions options) {
+        return commandAsync(transitionCommand(options));
+    }
+
+    private List<Object> transitionCommand(TransitionOptions options) {
         long now = options.nowMs() == 0 ? nowMs() : options.nowMs();
         long runAt = options.runAtMs() == 0 ? now : options.runAtMs();
         List<Object> cmd =
@@ -635,13 +915,14 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "PRIORITY", options.priority());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        Object response = command(cmd);
-        return options.returnRecord()
-                ? recordOrGet(response, options.id(), options.partitionKey())
-                : response;
+        return cmd;
     }
 
-    public Object complete(CompleteOptions options) {
+    CompletableFuture<Object> completeAsyncForWorker(CompleteOptions options) {
+        return commandAsync(completeCommand(options));
+    }
+
+    private List<Object> completeCommand(CompleteOptions options) {
         List<Object> cmd =
                 args(
                         "FLOW.COMPLETE",
@@ -657,13 +938,14 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "TTL", options.ttlMs());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        Object response = command(cmd);
-        return options.returnRecord()
-                ? recordOrGet(response, options.id(), options.partitionKey())
-                : response;
+        return cmd;
     }
 
-    public Object retry(RetryOptions options) {
+    CompletableFuture<Object> retryAsyncForWorker(RetryOptions options) {
+        return commandAsync(retryCommand(options));
+    }
+
+    private List<Object> retryCommand(RetryOptions options) {
         requireRetryNamedValuesUnsupported(
                 "FLOW.RETRY", options.values(), options.valueRefs(), options.mutationFields());
         List<Object> cmd =
@@ -681,13 +963,14 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "RUN_AT", options.runAtMs() == 0 ? null : options.runAtMs());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        Object response = command(cmd);
-        return options.returnRecord()
-                ? recordOrGet(response, options.id(), options.partitionKey())
-                : response;
+        return cmd;
     }
 
-    public Object fail(FailOptions options) {
+    CompletableFuture<Object> failAsyncForWorker(FailOptions options) {
+        return commandAsync(failCommand(options));
+    }
+
+    private List<Object> failCommand(FailOptions options) {
         List<Object> cmd =
                 args(
                         "FLOW.FAIL",
@@ -703,10 +986,7 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "TTL", options.ttlMs());
         appendMutationFields(cmd, options.mutationFields());
         appendNamedValues(cmd, codec, options.values(), options.valueRefs());
-        Object response = command(cmd);
-        return options.returnRecord()
-                ? recordOrGet(response, options.id(), options.partitionKey())
-                : response;
+        return cmd;
     }
 
     public Object cancel(CancelOptions options) {
