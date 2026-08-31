@@ -147,7 +147,7 @@ final class FerricStoreWorkerTest {
                     workflow.worker("worker-1", List.of("created")).runOnceAsync(handlers);
             assertTrue(started.await(2, TimeUnit.SECONDS));
             assertTrue(run.cancel(false));
-            assertTrue(userStage.isCancelled());
+            assertEventuallyCancelled(userStage);
             assertEquals(0, commands.count("FLOW.COMPLETE"));
             assertEquals(0, commands.count("FLOW.RETRY"));
         } finally {
@@ -308,6 +308,18 @@ final class FerricStoreWorkerTest {
                 1L,
                 "version",
                 1L);
+    }
+
+    private static void assertEventuallyCancelled(CompletableFuture<?> future) {
+        CountDownLatch completed = new CountDownLatch(1);
+        future.whenComplete((ignored, failure) -> completed.countDown());
+        try {
+            assertTrue(completed.await(2, TimeUnit.SECONDS));
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(failure);
+        }
+        assertTrue(future.isCancelled());
     }
 
     private static final class WorkerExecutor implements CommandExecutor {

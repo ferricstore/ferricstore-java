@@ -430,7 +430,7 @@ final class WorkflowDurableStepTest {
                                         .join());
 
         assertTrue(failure.getCause() instanceof TimeoutException);
-        assertTrue(commands.preflight.isCancelled());
+        assertEventuallyCancelled(commands.preflight);
         assertThrows(
                 DurableMutationOutcomeUnknownException.class,
                 () -> context.advance("must-not-use-stale-claim"));
@@ -453,7 +453,7 @@ final class WorkflowDurableStepTest {
 
         assertTrue(mutation.completeExceptionally(new TimeoutException("caller timeout")));
 
-        assertTrue(commands.preflight.isCancelled());
+        assertEventuallyCancelled(commands.preflight);
         assertThrows(
                 DurableMutationOutcomeUnknownException.class,
                 () -> context.advance("must-not-use-stale-claim"));
@@ -481,7 +481,7 @@ final class WorkflowDurableStepTest {
                                         .join());
 
         assertTrue(failure.getCause() instanceof DurableMutationOutcomeUnknownException);
-        assertTrue(commands.preflight.isCancelled());
+        assertEventuallyCancelled(commands.preflight);
     }
 
     @Test
@@ -511,7 +511,7 @@ final class WorkflowDurableStepTest {
 
             assertTrue(active.cancel(false));
 
-            assertTrue(commands.preflight.isCancelled());
+            assertEventuallyCancelled(commands.preflight);
             assertEquals(List.of("FLOW.CLAIM_DUE", "FLOW.EXTEND_LEASE"), commands.commandNames());
         } finally {
             executor.shutdownNow();
@@ -540,7 +540,7 @@ final class WorkflowDurableStepTest {
         assertThrows(
                 DurableMutationOutcomeUnknownException.class,
                 () -> workflow.worker("worker-a", List.of("charge")).runOnce());
-        assertTrue(commands.preflight.isCancelled());
+        assertEventuallyCancelled(commands.preflight);
         assertEquals(List.of("FLOW.CLAIM_DUE", "FLOW.EXTEND_LEASE"), commands.commandNames());
     }
 
@@ -574,7 +574,7 @@ final class WorkflowDurableStepTest {
                                                         0, TimeUnit.MILLISECONDS))
                                         .join());
         assertTrue(failure.getCause() instanceof DurableMutationOutcomeUnknownException);
-        assertTrue(commands.preflight.isCancelled());
+        assertEventuallyCancelled(commands.preflight);
         assertEquals(List.of("FLOW.CLAIM_DUE", "FLOW.EXTEND_LEASE"), commands.commandNames());
     }
 
@@ -1158,6 +1158,18 @@ final class WorkflowDurableStepTest {
         int index = command.indexOf(name);
         assertTrue(index >= 0, () -> "missing option " + name + " in " + command);
         assertEquals(expected, command.get(index + 1));
+    }
+
+    private static void assertEventuallyCancelled(CompletableFuture<?> future) {
+        java.util.concurrent.CountDownLatch completed = new java.util.concurrent.CountDownLatch(1);
+        future.whenComplete((ignored, failure) -> completed.countDown());
+        try {
+            assertTrue(completed.await(2, TimeUnit.SECONDS));
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(failure);
+        }
+        assertTrue(future.isCancelled());
     }
 
     private static final class WorkerExecutor implements CommandExecutor {
