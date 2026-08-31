@@ -23,7 +23,7 @@ Artifacts are published under the FerricStore GitHub organization namespace. Jav
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
-  <version>0.1.4</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
@@ -33,7 +33,7 @@ Spring Boot:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
-  <version>0.1.4</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
@@ -43,7 +43,7 @@ Optional Spring Statemachine adapter:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
-  <version>0.1.4</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
@@ -148,7 +148,7 @@ try (FerricStoreClient client = FerricStoreClient.connect("ferric://127.0.0.1:63
 }
 ```
 
-The low-level client provides both synchronous and `CompletableFuture` command APIs. Worker concurrency is handled at the worker layer: a worker claims a batch of durable leases, then processes those jobs concurrently before writing complete, retry, fail, or transition commands back to FerricStore. Java 17 uses a bounded platform-thread pool. On Java 21+, `.virtualThreads()` selects virtual threads and still respects the configured `concurrency` limit; on Java 17 it fails clearly instead of silently changing behavior. Any application—not only Spring—may pass an application-owned `ExecutorService` with `.executor(...)`; the SDK never closes a supplied executor.
+The low-level client provides both synchronous and `CompletableFuture` command APIs. Worker concurrency is handled at the worker layer: each poll claims and processes waves of at most `concurrency` leases until it reaches `batchSize` or no immediately claimable work remains. This preserves batch throughput without holding leases that are only waiting for a local executor slot. The worker then writes complete, retry, fail, or transition commands back to FerricStore. Java 17 uses a bounded platform-thread pool. On Java 21+, `.virtualThreads()` selects virtual threads and still respects the configured `concurrency` limit; on Java 17 it fails clearly instead of silently changing behavior. Any application—not only Spring—may pass an application-owned `ExecutorService` with `.executor(...)`; the SDK never closes a supplied executor.
 
 For Lambda or another one-shot invocation, use `runOnce(...)` as above. For a long-running service, keep the execution resources alive across polls with a session while retaining control of scheduling and shutdown:
 
@@ -192,6 +192,107 @@ try (FerricStoreClient client = FerricStoreClient.connect("ferric://127.0.0.1:63
         .runOnce();
 }
 ```
+
+### Durable workflow steps
+
+`advance()` changes only the logical workflow state. It reads the flow ID,
+partition, current `runState`, lease token, and fencing token from the claimed
+job and returns the renewed claim:
+
+```java
+ClaimedItem warning = client.advance(job, "schedule_warning");
+```
+
+`step()` runs an operation, journals its stored result, advances the state, and
+returns both values:
+
+```java
+DurableStepResult<ChargeReceipt> charged = client.step(
+    job,
+    "charge-customer:v1",
+    () -> stripe.charge(
+        150,
+        job.id() + ":charge-customer:v1"),
+    "schedule_warning",
+    ChargeReceipt.class);
+
+job = charged.job();
+ChargeReceipt receipt = charged.result();
+```
+
+The step name is its stable replay identity and must not change across retries.
+If FerricStore already committed that name, the SDK returns the stored result
+without running the closure again. External providers still need a stable
+idempotency key: a process can stop after the provider succeeds but before the
+journal commit reaches FerricStore.
+
+Inside a workflow handler, `WorkflowContext` retains each refreshed claim, so
+the next outcome automatically uses the new lease and fencing token:
+
+```java
+order.state("charge", ctx -> {
+    ChargeReceipt receipt = ctx.step(
+        "charge-customer:v1",
+        () -> stripe.charge(
+            150,
+            ctx.id() + ":charge-customer:v1"),
+        "schedule_warning",
+        ChargeReceipt.class);
+    return Outcomes.complete(receipt);
+});
+```
+
+The untyped overload returns the codec-normalized stored representation as
+`Object`. Pass a result class for type-safe first-run and replay behavior, or a
+`DurableResultDecoder<T>` for parameterized/custom result types. `Void.class`
+supports durable operations with no value. A non-`Void` step must return a
+non-null result; this keeps a stored empty string or empty byte array distinct
+from an intentionally valueless operation.
+
+Framework-neutral asynchronous handlers use `CompletionStage` and do not
+require Reactor:
+
+```java
+order.stateAsync("charge", ctx ->
+    ctx.stepAsync(
+            "charge-customer:v1",
+            () -> stripe.chargeAsync(
+                150,
+                ctx.id() + ":charge-customer:v1"),
+            "schedule_warning",
+            ChargeReceipt.class)
+        .thenApply(Outcomes::complete));
+
+CompletableFuture<Integer> handled = order
+    .worker("order-worker-1", List.of("charge"))
+    .partitionKey("tenant-1")
+    .runOnceAsync(applicationExecutor);
+```
+
+`runOnceAsync` requires an executor that dispatches work instead of running it
+inline. The SDK rejects direct executors before claiming any workflow because
+inline execution can block the native protocol response reader. The default
+worker executor and ordinary `ExecutorService` implementations are suitable.
+
+Only one durable mutation may be active on a `WorkflowContext`. A second one is
+rejected before its closure runs. Cancelling, timing out, or externally
+completing an in-flight context mutation invalidates that claim because the
+commit outcome may be unknown; recover or reclaim the workflow instead of using
+the stale context. `completeOnTimeout(...)` cannot fabricate a durable result
+and therefore completes with a recovery-required failure instead of the supplied
+fallback value.
+
+An explicit durable-step closure executor must dispatch work asynchronously.
+Direct executors and saturated caller-runs policies are rejected before the user
+closure executes, preventing application code from running on a native response
+reader or HTTP completion thread.
+
+A timer, signal, approval, or scheduled transition should return an outcome
+that persists the waiting state and releases the current claim. No worker is
+held while the workflow waits. When the condition makes it runnable, any worker
+can claim a fresh lease and continue. The deprecated low-level
+`continueStep()`/`stepContinue()` methods remain temporarily available for
+migration; new code should use `advance()` or `step()`.
 
 Handlers return explicit outcomes:
 

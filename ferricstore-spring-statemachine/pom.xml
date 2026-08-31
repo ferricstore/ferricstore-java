@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.ferricstore</groupId>
     <artifactId>ferricstore-java-parent</artifactId>
-    <version>0.1.4</version>
+    <version>0.2.0</version>
   </parent>
 
   <artifactId>ferricstore-spring-statemachine</artifactId>

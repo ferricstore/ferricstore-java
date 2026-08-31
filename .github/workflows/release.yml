@@ -28,19 +28,19 @@ jobs:
       - if: matrix.java-version == 17
         run: mvn -B test
       - if: matrix.java-version == 21
-        run: mvn -B -P quality verify
+        run: mvn -B -Pquality verify
       - run: docker compose up -d ferricstore
       - run: scripts/wait-for-ferricstore.sh
       - run: >-
           mvn -B -pl ferricstore-java -am
-          -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test
+          -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest test
         env:
           FERRICSTORE_INTEGRATION: "1"
       - if: always()
         run: docker compose logs ferricstore
       - if: always()
         run: docker compose down -v
-      - run: scripts/run-http-integration.sh
+      - run: scripts/run-http-integration-matrix.sh
 
   maven-central:
     name: publish maven central
@@ -60,9 +60,10 @@ jobs:
           server-password: CENTRAL_PASSWORD
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: GPG_PASSPHRASE
-      - run: mvn -B -P quality verify
+      - run: mvn -B -Pquality verify
+      - run: scripts/verify-release-tag.sh
       - run: >-
-          mvn -B -P release
+          mvn -B -Prelease
           -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter
           -am deploy
         env:

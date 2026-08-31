@@ -11,7 +11,8 @@ public record ClaimedItem(
         String state,
         String runState,
         Object payload,
-        Map<String, Object> attributes) {
+        Map<String, Object> attributes)
+        implements ClaimedFlow {
     public ClaimedItem {
         attributes = ImmutableCopies.map(attributes);
     }

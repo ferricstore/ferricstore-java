@@ -20,15 +20,15 @@ run = "mvn -B verify"
 
 [tasks.integration]
 description = "Run native-protocol command and concurrency integration tests on Java 21"
-run = "FERRICSTORE_INTEGRATION=1 mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
+run = "FERRICSTORE_INTEGRATION=1 mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest test"
 
 [tasks."integration:java17"]
 description = "Run native-protocol command and concurrency integration tests on Java 17"
-run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-17 -- mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
+run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-17 -- mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest test"
 
 [tasks."integration:java21"]
 description = "Run native-protocol command and concurrency integration tests on Java 21"
-run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-21 -- mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test"
+run = "FERRICSTORE_INTEGRATION=1 mise exec java@temurin-21 -- mvn -B -pl ferricstore-java -am -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest test"
 
 [tasks."integration:http"]
 description = "Run authenticated TLS HTTP command and concurrency integration tests on Java 21"
@@ -130,6 +130,6 @@ run = "scripts/run-workflow-benchmark-matrix.sh"
 description = "Build and verify the exact Maven Central release reactor without publishing"
 run = """
 mvn -B clean
-mvn -B -P release -Dgpg.skip=true -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter -am package
+mvn -B -Prelease -Dgpg.skip=true -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter -am package
 scripts/verify-release-layout.sh
 """

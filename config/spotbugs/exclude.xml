@@ -86,6 +86,7 @@
     <Or>
       <Class name="com.ferricstore.QueueHandler" />
       <Class name="com.ferricstore.WorkflowHandler" />
+      <Class name="com.ferricstore.AsyncWorkflowHandler" />
     </Or>
   </Match>
 
@@ -101,15 +102,26 @@
     <Class name="com.ferricstore.NativeExecutor" />
   </Match>
 
-  <!-- Protocol and future failures deliberately cross private runtime-only boundaries. -->
+  <!-- Protocol, durable-worker, and future failures deliberately cross runtime-only boundaries. -->
   <Match>
     <Bug pattern="THROWS_METHOD_THROWS_RUNTIMEEXCEPTION" />
     <Or>
       <Class name="com.ferricstore.AsyncFutures" />
       <Class name="com.ferricstore.NativeExecutor" />
       <Class name="com.ferricstore.NativeResponseAssembler" />
+      <Class name="com.ferricstore.WorkerExecutors" />
+      <Class name="com.ferricstore.WorkflowWorker" />
+      <Class name="com.ferricstore.DurableStepTest$ScriptedExecutor" />
+      <Class name="com.ferricstore.FerricStoreWorkerTest$WorkerExecutor" />
+      <Class name="com.ferricstore.WorkflowDurableStepTest$WorkerExecutor" />
       <Class name="~com\.ferricstore\.examples\.ProtocolWorkflowBenchmark.*" />
     </Or>
+  </Match>
+
+  <!-- This test double intentionally returns its controllable future to model cancellation. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP" />
+    <Class name="com.ferricstore.WorkflowDurableStepTest$PausingExecutor" />
   </Match>
 
   <!-- Nullable metadata mirrors optional server fields; raw wire detail is transient by design. -->
@@ -122,5 +134,12 @@
   <Match>
     <Bug pattern="CWO_CLOSED_WITHOUT_OPENED" />
     <Class name="com.ferricstore.WorkerSessionRuntime" />
+  </Match>
+
+  <!-- The response-loss proxy deliberately closes both tunnel ends and ignores close races. -->
+  <Match>
+    <Bug pattern="DE_MIGHT_IGNORE" />
+    <Class name="com.ferricstore.ResponseDropProxy" />
+    <Method name="closeQuietly" />
   </Match>
 </FindBugsFilter>

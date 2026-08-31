@@ -567,19 +567,62 @@ final class HttpExecutorTest {
                             "UNWATCH",
                             "WATCH",
                             "WINDOW_UPDATE")) {
-                IllegalArgumentException error =
+                HttpTransportException error =
                         assertThrows(
-                                IllegalArgumentException.class,
+                                HttpTransportException.class,
                                 () -> executor.execute(List.of(command)));
                 assertTrue(error.getMessage().contains("native TCP"));
+                assertEquals(RequestDelivery.NOT_SENT, error.delivery());
             }
             for (String command : List.of("AUTH", "SUBSCRIBE", "WATCH")) {
-                IllegalArgumentException error =
+                HttpTransportException error =
                         assertThrows(
-                                IllegalArgumentException.class,
+                                HttpTransportException.class,
                                 () -> executor.execute(List.of("COMMAND_EXEC", command)));
                 assertTrue(error.getMessage().contains("native TCP"));
+                assertEquals(RequestDelivery.NOT_SENT, error.delivery());
             }
+            assertEquals(0, requests.get());
+        }
+    }
+
+    @Test
+    void classifiesEveryPreSubmissionHttpFailureAsNotSent() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (TestServer server =
+                server(
+                        exchange -> {
+                            requests.incrementAndGet();
+                            replyOk(exchange, "unexpected");
+                        })) {
+            HttpExecutor executor =
+                    HttpExecutor.connect(
+                            server.url(),
+                            HttpTransportOptions.builder()
+                                    .maxBatchItems(1)
+                                    .maxRequestBytes(64)
+                                    .build());
+            for (CompletableFuture<?> failure :
+                    List.of(
+                            executor.pipelineAsync(List.of(List.of("PING"), List.of("PING"))),
+                            executor.executeAsync(List.of("SET", "key", "x".repeat(1_024))),
+                            executor.executeAsync(List.of("WATCH", "key")))) {
+                ExecutionException thrown =
+                        assertThrows(
+                                ExecutionException.class, () -> failure.get(1, TimeUnit.SECONDS));
+                HttpTransportException notSent =
+                        assertInstanceOf(HttpTransportException.class, thrown.getCause());
+                assertEquals(RequestDelivery.NOT_SENT, notSent.delivery());
+            }
+            assertEquals(0, requests.get());
+
+            executor.close();
+            CompletableFuture<Object> closed = executor.executeAsync(List.of("PING"));
+            ExecutionException thrown =
+                    assertThrows(ExecutionException.class, () -> closed.get(1, TimeUnit.SECONDS));
+            HttpTransportException notSent =
+                    assertInstanceOf(HttpTransportException.class, thrown.getCause());
+            assertEquals(RequestDelivery.NOT_SENT, notSent.delivery());
             assertEquals(0, requests.get());
         }
     }
@@ -931,7 +974,10 @@ final class HttpExecutorTest {
             HttpExecutor executor =
                     HttpExecutor.connect(server.url(), HttpTransportOptions.defaults());
             executor.close();
-            assertThrows(IllegalStateException.class, () -> executor.execute(List.of("PING")));
+            HttpTransportException closed =
+                    assertThrows(
+                            HttpTransportException.class, () -> executor.execute(List.of("PING")));
+            assertEquals(RequestDelivery.NOT_SENT, closed.delivery());
         }
 
         IllegalArgumentException error =

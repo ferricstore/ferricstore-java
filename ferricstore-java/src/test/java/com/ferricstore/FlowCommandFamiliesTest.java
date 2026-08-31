@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 final class FlowCommandFamiliesTest {
     @Test
+    @SuppressWarnings("deprecation")
     void stepAndInsightFamiliesBuildCanonicalCommands() {
         CapturingExecutor executor = new CapturingExecutor(flowRecord(), "OK", Map.of(), List.of());
         FerricStoreClient client = FerricStoreClient.fromExecutor(executor);

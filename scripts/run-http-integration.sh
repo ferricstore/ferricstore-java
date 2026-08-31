@@ -8,6 +8,7 @@ username="sdk-http"
 password="sdk-http-secret"
 denied_username="sdk-http-denied"
 denied_password="sdk-http-denied-secret"
+integration_tests="${FERRICSTORE_INTEGRATION_TESTS:-FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest}"
 
 cleanup() {
   status=$?
@@ -81,7 +82,15 @@ case "$format" in
     exit 1
     ;;
 esac
-echo "Running authenticated TLS HTTP integration tests with $format" >&2
+version="${FERRICSTORE_HTTP_VERSION:-h1}"
+case "$version" in
+  h1|h2) ;;
+  *)
+    echo "FERRICSTORE_HTTP_VERSION must be h1 or h2" >&2
+    exit 1
+    ;;
+esac
+echo "Running authenticated TLS HTTP integration tests with $format over $version" >&2
 env \
   FERRICSTORE_INTEGRATION=1 \
   FERRICSTORE_URL="https://127.0.0.1:$port" \
@@ -89,5 +98,6 @@ env \
   FERRICSTORE_PASSWORD="$password" \
   FERRICSTORE_CA_FILE="$tls_dir/ca.pem" \
   FERRICSTORE_HTTP_FORMAT="$format" \
+  FERRICSTORE_HTTP_VERSION="$version" \
   mvn -B -pl ferricstore-java -am \
-    -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test
+    -Dtest="$integration_tests" test

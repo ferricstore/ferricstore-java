@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-01
+
+- Add chainable `advance()` and durable `step()` APIs that infer workflow identity,
+  lease, fencing token, partition, and logical state from a claimed job and return
+  the refreshed claim plus the journaled result.
+- Add type-safe Java replay decoding, including default-codec strings, JSON POJOs,
+  custom result decoders, and durable `Void` results.
+- Add framework-neutral `stateAsync(...)` workflow handlers and genuinely composed
+  `CompletableFuture` workers on Java 17, with guarded per-context mutations and
+  recovery-required cancellation semantics.
+- Preserve worker lease and reclaim behavior, add partition-scoped workers, and
+  prevent response-loss, interruption, cancellation, or final-mutation failures
+  from issuing stale fallback writes.
+- Cover worker takeover before commit, provider idempotency, response loss after
+  commit through a real transport disconnect, waiting-state release, and real
+  worker-session termination over native TCP/TLS and authenticated HTTP/1.1 and
+  HTTP/2.
+- Classify ambiguous native and HTTP command failures conservatively and classify
+  all native local preparation failures as definitely not sent.
+- Treat HTTP request timeouts after dispatch as outcome-unknown durable mutations,
+  and reject direct or caller-runs closure execution before application code can
+  block a transport completion thread.
+- Atomically seal workflow contexts before their final mutation, poison claims on
+  externally timed-out/completed mutations, and keep cancelled task bodies tracked
+  until they actually exit.
+- Claim worker jobs in concurrency-sized waves up to the configured batch size and
+  drain every accepted sibling task before a failed poll returns.
+
 ## 0.1.4 - 2026-08-27
 
 - Cover the complete typed FerricStore and FerricFlow command API with rich-argument

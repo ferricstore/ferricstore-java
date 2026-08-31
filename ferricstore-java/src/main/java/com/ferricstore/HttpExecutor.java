@@ -93,6 +93,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private final boolean compact;
     private final AsyncPermitPool requestSlots;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicReference<HttpClient.Version> observedVersion = new AtomicReference<>();
 
     private HttpExecutor(String endpoint, HttpTransportOptions options) {
         commandEndpoint = commandEndpoint(endpoint, options);
@@ -117,6 +118,11 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         return new HttpExecutor(endpoint, options);
     }
 
+    /** Returns the protocol version observed on the most recent HTTP response, if any. */
+    public HttpClient.Version observedVersion() {
+        return observedVersion.get();
+    }
+
     @Override
     public Object execute(List<Object> args) {
         return AsyncFutures.await(
@@ -130,7 +136,11 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
 
     @Override
     public CompletableFuture<Object> executeAsync(List<Object> args) {
-        return AsyncFutures.map(pipelineAsync(List.of(args)), results -> results.get(0));
+        try {
+            return AsyncFutures.map(pipelineAsync(List.of(args)), results -> results.get(0));
+        } catch (RuntimeException failure) {
+            return AsyncFutures.failed(localFailure(failure));
+        }
     }
 
     @Override
@@ -146,29 +156,34 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
 
     @Override
     public CompletableFuture<List<Object>> pipelineAsync(List<List<Object>> commands) {
-        Objects.requireNonNull(commands, "commands");
-        requireOpen();
-        if (commands.isEmpty()) {
-            return CompletableFuture.completedFuture(List.of());
-        }
-        if (commands.size() > maxBatchItems) {
-            throw new IllegalArgumentException(
-                    "HTTP command batch exceeds maxBatchItems=" + maxBatchItems);
-        }
+        try {
+            Objects.requireNonNull(commands, "commands");
+            requireOpen();
+            if (commands.isEmpty()) {
+                return CompletableFuture.completedFuture(List.of());
+            }
+            if (commands.size() > maxBatchItems) {
+                throw new IllegalArgumentException(
+                        "HTTP command batch exceeds maxBatchItems=" + maxBatchItems);
+            }
 
-        FlowCreatePipeline.Batch flowCreateBatch = FlowCreatePipeline.tryParse(commands);
-        EncodedBody requestBody =
-                compact
-                        ? encodeMessagePackRequest(commands, flowCreateBatch)
-                        : flowCreateBatch == null
-                                ? encodeRequest(commands)
-                                : encodeFlowCreateManyRequest(flowCreateBatch);
-        return AsyncFutures.map(
-                sendAsync(requestBody, effectiveRequestTimeout(commands)),
-                response ->
-                        flowCreateBatch == null
-                                ? decodePipelineResponse(commands.size(), response)
-                                : decodeFlowCreateManyResponse(flowCreateBatch.count(), response));
+            FlowCreatePipeline.Batch flowCreateBatch = FlowCreatePipeline.tryParse(commands);
+            EncodedBody requestBody =
+                    compact
+                            ? encodeMessagePackRequest(commands, flowCreateBatch)
+                            : flowCreateBatch == null
+                                    ? encodeRequest(commands)
+                                    : encodeFlowCreateManyRequest(flowCreateBatch);
+            return AsyncFutures.map(
+                    sendAsync(requestBody, effectiveRequestTimeout(commands)),
+                    response ->
+                            flowCreateBatch == null
+                                    ? decodePipelineResponse(commands.size(), response)
+                                    : decodeFlowCreateManyResponse(
+                                            flowCreateBatch.count(), response));
+        } catch (RuntimeException failure) {
+            return AsyncFutures.failed(localFailure(failure));
+        }
     }
 
     private List<Object> decodeFlowCreateManyResponse(
@@ -281,7 +296,8 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                     transportFailure(
                             "FerricStore HTTP request timed out waiting for client capacity",
                             "transport_timeout",
-                            null));
+                            null,
+                            RequestDelivery.NOT_SENT));
             return;
         }
         CompletableFuture<HttpResponse<byte[]>> responseFuture =
@@ -301,6 +317,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                         return;
                     }
                     try {
+                        observedVersion.set(response.version());
                         boolean messagePack = messagePackResponse(response);
                         Map<String, Object> payload =
                                 response.body().length == 0
@@ -1003,7 +1020,24 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
 
     private static HttpTransportException transportFailure(
             String message, String code, Throwable cause) {
-        return new HttpTransportException(message, 0, code, false, false, null, Map.of(), cause);
+        return transportFailure(message, code, cause, RequestDelivery.UNKNOWN);
+    }
+
+    private static HttpTransportException localFailure(RuntimeException failure) {
+        if (failure instanceof HttpTransportException transport) {
+            return transport;
+        }
+        return transportFailure(
+                "FerricStore HTTP request was rejected before submission: " + failure.getMessage(),
+                "client_request_invalid",
+                failure,
+                RequestDelivery.NOT_SENT);
+    }
+
+    private static HttpTransportException transportFailure(
+            String message, String code, Throwable cause, RequestDelivery delivery) {
+        return new HttpTransportException(
+                message, 0, code, false, false, null, Map.of(), cause, delivery);
     }
 
     private RuntimeException mapCapacityFailure(Throwable failure) {
@@ -1012,13 +1046,15 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             return transportFailure(
                     "FerricStore HTTP request timed out waiting for client capacity",
                     "transport_timeout",
-                    error);
+                    error,
+                    RequestDelivery.NOT_SENT);
         }
         if (error instanceof RejectedExecutionException) {
             return transportFailure(
                     "FerricStore HTTP client pending request limit exceeded",
                     "client_overloaded",
-                    error);
+                    error,
+                    RequestDelivery.NOT_SENT);
         }
         if (error instanceof RuntimeException runtime) {
             return runtime;
@@ -1026,7 +1062,8 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         return transportFailure(
                 "FerricStore HTTP request failed while waiting for client capacity",
                 "transport_error",
-                error);
+                error,
+                RequestDelivery.NOT_SENT);
     }
 
     private static <S, T> CompletableFuture<T> composeCancellable(

@@ -4,8 +4,13 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 final class AsyncFutures {
     private AsyncFutures() {}
@@ -30,6 +35,57 @@ final class AsyncFutures {
 
     static <T> CompletableFuture<T> failed(Throwable error) {
         return CompletableFuture.failedFuture(unwrap(error));
+    }
+
+    static <T> CompletableFuture<T> dispatch(
+            Executor executor, Supplier<? extends T> supplier, String operation) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        Thread submitter = Thread.currentThread();
+        AtomicBoolean dispatchReturned = new AtomicBoolean();
+        try {
+            executor.execute(
+                    () -> {
+                        if (!dispatchReturned.get() && Thread.currentThread().equals(submitter)) {
+                            result.completeExceptionally(
+                                    new RejectedExecutionException(
+                                            operation + " executor ran application code inline"));
+                            return;
+                        }
+                        if (result.isDone()) {
+                            return;
+                        }
+                        try {
+                            result.complete(supplier.get());
+                        } catch (RuntimeException | Error failure) {
+                            result.completeExceptionally(failure);
+                        }
+                    });
+        } catch (RuntimeException failure) {
+            result.completeExceptionally(failure);
+        } finally {
+            dispatchReturned.set(true);
+        }
+        return result;
+    }
+
+    static void dispatchCompletion(Executor executor, Runnable completion) {
+        Thread submitter = Thread.currentThread();
+        AtomicBoolean dispatchReturned = new AtomicBoolean();
+        Runnable guarded =
+                () -> {
+                    if (!dispatchReturned.get() && Thread.currentThread().equals(submitter)) {
+                        ForkJoinPool.commonPool().execute(completion);
+                    } else {
+                        completion.run();
+                    }
+                };
+        try {
+            executor.execute(guarded);
+        } catch (RuntimeException rejected) {
+            ForkJoinPool.commonPool().execute(completion);
+        } finally {
+            dispatchReturned.set(true);
+        }
     }
 
     static <T> CompletableFuture<List<T>> sequence(
