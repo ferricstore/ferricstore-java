@@ -125,6 +125,18 @@ final class HttpIntegrationReleaseContractTest {
     }
 
     @Test
+    void defaultBuildDeclaresItsMinimumMavenAndJavaVersions() throws IOException {
+        String pom = repositoryFile("pom.xml");
+        String defaultBuild = pom.substring(0, pom.indexOf("<profiles>"));
+
+        assertTrue(defaultBuild.contains("<artifactId>maven-enforcer-plugin</artifactId>"));
+        assertTrue(defaultBuild.contains("<requireMavenVersion>"));
+        assertTrue(defaultBuild.contains("<version>[3.9.0,)</version>"));
+        assertTrue(defaultBuild.contains("<requireJavaVersion>"));
+        assertTrue(defaultBuild.contains("<version>[17,)</version>"));
+    }
+
+    @Test
     void releaseChecksTheTagBeforePublishingAndShipsCurrentApiDocumentation() throws IOException {
         String release = repositoryFile(".github/workflows/release.yml");
         int guard = release.indexOf("scripts/verify-release-tag.sh");

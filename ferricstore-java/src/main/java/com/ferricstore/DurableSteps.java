@@ -444,7 +444,7 @@ final class DurableSteps {
 
     private static void validateStep(ClaimedItem job, String name, Object run, String toState) {
         validateClaim(job, toState);
-        FlowValidation.requireText(name, "durable step name");
+        FlowValidation.requireUnicodeText(name, "durable step name");
         Objects.requireNonNull(run, "run");
     }
 

@@ -15,6 +15,25 @@ final class FlowValidation {
         }
     }
 
+    static void requireUnicodeText(String value, String field) {
+        requireText(value, field);
+        int index = 0;
+        while (index < value.length()) {
+            char current = value.charAt(index);
+            if (Character.isHighSurrogate(current)) {
+                if (index + 1 >= value.length()
+                        || !Character.isLowSurrogate(value.charAt(index + 1))) {
+                    throw new IllegalArgumentException(field + " must contain valid Unicode");
+                }
+                index += 2;
+            } else if (Character.isLowSurrogate(current)) {
+                throw new IllegalArgumentException(field + " must contain valid Unicode");
+            } else {
+                index++;
+            }
+        }
+    }
+
     static void requireFencingToken(long value) {
         if (value < 0) {
             throw new IllegalArgumentException("flow fencing token must be non-negative");
