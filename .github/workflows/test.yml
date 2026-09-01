@@ -9,6 +9,15 @@ permissions:
   contents: read
 
 jobs:
+  release-scripts:
+    name: release automation tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/test-extract-central-deployment-id.sh
+      - run: scripts/test-wait-for-central-publish.sh
+      - run: scripts/test-verify-maven-central-release.sh
+
   unit:
     name: unit java-${{ matrix.java-version }}
     runs-on: ubuntu-latest
