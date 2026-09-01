@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-09-01
+
 - Reject malformed-Unicode durable step names before closure execution or
   network I/O, preventing replacement-character collisions in journal keys.
 - Enforce Maven 3.9 and Java 17 in the default reactor build while retaining the
