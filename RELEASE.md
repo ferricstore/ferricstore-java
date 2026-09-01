@@ -22,7 +22,7 @@ Releases are published to Maven Central from GitHub Actions when a version tag i
 4. Create a signed tag:
 
    ```bash
-   git tag -s v0.2.0 -m "v0.2.0"
+   git tag -s v0.2.1 -m "v0.2.1"
    git push origin main --tags
    ```
 

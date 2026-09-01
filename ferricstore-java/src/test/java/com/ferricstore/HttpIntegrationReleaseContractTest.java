@@ -145,7 +145,7 @@ final class HttpIntegrationReleaseContractTest {
         assertTrue(guard < deploy, "release tag guard must run before Maven Central deploy");
 
         String apiIndex = repositoryFile("docs/api/index.html");
-        assertTrue(apiIndex.contains("0.2.0 API"));
+        assertTrue(apiIndex.contains("0.2.1 API"));
         assertTrue(
                 Files.exists(
                         REPOSITORY.resolve("docs/api/com/ferricstore/DurableStepResult.html")));
