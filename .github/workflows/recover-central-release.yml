@@ -1,0 +1,63 @@
+name: recover central release
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_id:
+        description: Existing Maven Central deployment ID
+        required: true
+        type: string
+      tag:
+        description: Existing signed release tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: recover-central-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-release:
+    name: verify accepted deployment and create release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out recovery automation
+        uses: actions/checkout@v7
+        with:
+          path: automation
+      - name: Check out the released source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          path: release
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          cache-dependency-path: release/pom.xml
+      - name: Verify tag and read Maven version
+        id: release
+        working-directory: release
+        run: |
+          RELEASE_TAG="${{ inputs.tag }}" scripts/verify-release-tag.sh
+          version="$(mvn -q -Dstyle.color=never help:evaluate \
+            -Dexpression=project.version -DforceStdout 2>/dev/null \
+            | tr -d '\r' | tail -n 1)"
+          echo "version=${version}" >>"${GITHUB_OUTPUT}"
+      - name: Wait for the existing Central deployment
+        run: automation/scripts/wait-for-central-publish.sh "${{ inputs.deployment_id }}"
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+      - name: Verify fresh Maven Central resolution
+        run: automation/scripts/verify-maven-central-release.sh "${{ steps.release.outputs.version }}"
+      - name: Create the GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          generate_release_notes: true

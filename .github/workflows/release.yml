@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   validate:
     name: release integration gates java-${{ matrix.java-version }}
@@ -62,15 +66,26 @@ jobs:
           gpg-passphrase: GPG_PASSPHRASE
       - run: mvn -B -Pquality verify
       - run: scripts/verify-release-tag.sh
-      - run: >-
-          mvn -B -Prelease
-          -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter
-          -am deploy
+      - name: Upload one Maven Central deployment
+        id: central-upload
+        run: |
+          mvn -B -Prelease \
+            -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter \
+            -am deploy | tee central-publish.log
+          deployment_id="$(scripts/extract-central-deployment-id.sh central-publish.log)"
+          echo "deployment_id=${deployment_id}" >>"${GITHUB_OUTPUT}"
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
       - run: scripts/verify-release-bundle.sh
+      - name: Wait for the accepted Central deployment
+        run: scripts/wait-for-central-publish.sh "${{ steps.central-upload.outputs.deployment_id }}"
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+      - name: Verify fresh Maven Central resolution
+        run: scripts/verify-maven-central-release.sh "${GITHUB_REF_NAME#v}"
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true

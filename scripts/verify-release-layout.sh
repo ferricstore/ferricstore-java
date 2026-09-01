@@ -60,8 +60,8 @@ done
 mvn -q -Dstyle.color=never help:effective-pom \
   -Doutput=target/release-effective-pom.xml
 
-if ! grep -q '<waitUntil>published</waitUntil>' target/release-effective-pom.xml; then
-  echo "Central release must wait until artifacts are published" >&2
+if ! grep -q '<waitUntil>uploaded</waitUntil>' target/release-effective-pom.xml; then
+  echo "Central upload must return its deployment ID without waiting for publication" >&2
   exit 1
 fi
 

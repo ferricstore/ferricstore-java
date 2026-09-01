@@ -133,3 +133,11 @@ mvn -B clean
 mvn -B -Prelease -Dgpg.skip=true -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter -am package
 scripts/verify-release-layout.sh
 """
+
+[tasks."test:release-scripts"]
+description = "Test Central upload extraction, publication polling, and fresh resolution checks"
+run = """
+scripts/test-extract-central-deployment-id.sh
+scripts/test-wait-for-central-publish.sh
+scripts/test-verify-maven-central-release.sh
+"""
