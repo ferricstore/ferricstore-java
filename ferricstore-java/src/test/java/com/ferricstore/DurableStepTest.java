@@ -849,8 +849,21 @@ final class DurableStepTest {
                                     return "provider-42";
                                 },
                                 "schedule_warning"));
+        IllegalArgumentException malformedUnicode =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                client.step(
+                                        claim(),
+                                        "charge:\uD800",
+                                        () -> {
+                                            executions.incrementAndGet();
+                                            return "provider-42";
+                                        },
+                                        "schedule_warning"));
 
         assertEquals(0, executions.get());
+        assertTrue(malformedUnicode.getMessage().contains("valid Unicode"));
         assertTrue(commands.calls().isEmpty());
     }
 
