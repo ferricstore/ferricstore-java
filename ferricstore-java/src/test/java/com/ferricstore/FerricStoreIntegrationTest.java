@@ -815,6 +815,7 @@ final class FerricStoreIntegrationTest {
         assertEquals("acme", text(claimed.get(0).attributes().get("tenant")));
     }
 
+    @SuppressWarnings("deprecation")
     private static void assertFlowSteps(
             FerricStoreClient client, String type, String partition, String suffix, long now) {
         String id = "java-sdk:admin:step:" + suffix;

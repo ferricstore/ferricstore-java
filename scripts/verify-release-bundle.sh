@@ -3,7 +3,14 @@ set -euo pipefail
 
 bundle_path="${1:-target/central-publishing/central-bundle.zip}"
 expected_group_path="io/github/ferricstore"
-expected_version="0.1.4"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"${script_dir}/verify-release-tag.sh"
+expected_version="$(
+  mvn -q -Dstyle.color=never help:evaluate \
+    -Dexpression=project.version -DforceStdout 2>/dev/null \
+    | tr -d '\r' \
+    | tail -n 1
+)"
 expected_artifacts=(
   ferricstore-java-parent
   ferricstore-java

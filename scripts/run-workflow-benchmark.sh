@@ -11,7 +11,7 @@ for command in java mvn; do
   }
 done
 
-mvn -q -pl ferricstore-examples -am -DskipTests package
+mvn -q -pl ferricstore-examples -am -DskipTests -Djacoco.skip=true install
 sdk_dependency_classpath="$(mvn -q -pl ferricstore-java dependency:build-classpath -Dmdep.outputFile=/dev/stdout)"
 example_dependency_classpath="$(mvn -q -pl ferricstore-examples dependency:build-classpath -Dmdep.outputFile=/dev/stdout)"
 dependency_classpath="$sdk_dependency_classpath:$example_dependency_classpath"

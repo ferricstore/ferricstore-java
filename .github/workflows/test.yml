@@ -9,6 +9,15 @@ permissions:
   contents: read
 
 jobs:
+  release-scripts:
+    name: release automation tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/test-extract-central-deployment-id.sh
+      - run: scripts/test-wait-for-central-publish.sh
+      - run: scripts/test-verify-maven-central-release.sh
+
   unit:
     name: unit java-${{ matrix.java-version }}
     runs-on: ubuntu-latest
@@ -35,7 +44,7 @@ jobs:
           distribution: temurin
           java-version: 21
           cache: maven
-      - run: mvn -B -P quality verify
+      - run: mvn -B -Pquality verify
 
   package:
     name: release dry-run
@@ -49,7 +58,7 @@ jobs:
           cache: maven
       - run: mvn -B clean
       - run: >-
-          mvn -B -P release -Dgpg.skip=true
+          mvn -B -Prelease -Dgpg.skip=true
           -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter
           -am package
       - run: scripts/verify-release-layout.sh
@@ -72,7 +81,7 @@ jobs:
       - run: scripts/wait-for-ferricstore.sh
       - run: >-
           mvn -B -pl ferricstore-java -am
-          -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest test
+          -Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest test
         env:
           FERRICSTORE_INTEGRATION: "1"
       - if: always()
@@ -96,4 +105,4 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.java-version }}
           cache: maven
-      - run: scripts/run-http-integration.sh
+      - run: scripts/run-http-integration-matrix.sh

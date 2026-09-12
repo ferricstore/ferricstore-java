@@ -21,7 +21,8 @@ public record FlowRecord(
         Map<String, Object> valueRefs,
         Map<String, Object> attributes,
         Map<String, Object> stateMeta,
-        Map<String, Object> raw) {
+        Map<String, Object> raw)
+        implements ClaimedFlow {
     public FlowRecord {
         values = ImmutableCopies.map(values);
         valueRefs = ImmutableCopies.map(valueRefs);
@@ -109,5 +110,15 @@ public record FlowRecord(
 
     public <T> T payloadAs(Class<T> type) {
         return type.cast(payload);
+    }
+
+    /** Returns the logical workflow state for an actively claimed flow. */
+    @Override
+    public String runState() {
+        Object value = raw.get("run_state");
+        if (value instanceof byte[] bytes) {
+            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        return value == null ? null : String.valueOf(value);
     }
 }

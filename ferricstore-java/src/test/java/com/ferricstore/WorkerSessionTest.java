@@ -11,13 +11,17 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -73,7 +77,7 @@ final class WorkerSessionTest {
                         .state("created", context -> Outcomes.transition("charged"));
 
         try (WorkflowWorkerSession session =
-                workflow.worker("worker-1", List.of("created")).openSession()) {
+                workflow.worker("worker-1", List.of("created")).batchSize(1).openSession()) {
             assertEquals(1, session.runOnce());
             assertEquals(1, session.runOnce());
         }
@@ -91,6 +95,7 @@ final class WorkerSessionTest {
         QueueWorkerSession session =
                 new Queue(FerricStoreClient.fromExecutor(commands), "email", "queued")
                         .worker("worker-1")
+                        .batchSize(1)
                         .openSession(
                                 job -> {
                                     enteredHandler.countDown();
@@ -124,6 +129,7 @@ final class WorkerSessionTest {
         QueueWorkerSession session =
                 new Queue(FerricStoreClient.fromExecutor(commands), "email", "queued")
                         .worker("worker-1")
+                        .batchSize(1)
                         .openSession(
                                 job -> {
                                     enteredHandler.countDown();
@@ -197,14 +203,154 @@ final class WorkerSessionTest {
                 ExecutionException error =
                         assertThrows(
                                 ExecutionException.class, () -> active.get(2, TimeUnit.SECONDS));
-                FerricStoreException workerError =
-                        assertInstanceOf(FerricStoreException.class, error.getCause());
-                assertTrue(workerError.getMessage().contains("cancelled"));
+                assertInstanceOf(
+                        java.util.concurrent.CancellationException.class, error.getCause());
+                assertEquals(0, commands.count("FLOW.RETRY"));
                 assertFalse(workers.isShutdown());
             } finally {
                 caller.shutdownNow();
                 workers.shutdownNow();
             }
+        }
+    }
+
+    @Test
+    void defaultConcurrencySessionTimeoutInterruptsItsActiveHandler() throws Exception {
+        WorkerCommandExecutor commands =
+                new WorkerCommandExecutor(List.of(flowRecord("job-1", "queued")));
+        CountDownLatch enteredHandler = new CountDownLatch(1);
+        CountDownLatch interruptedHandler = new CountDownLatch(1);
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        QueueWorkerSession session =
+                new Queue(FerricStoreClient.fromExecutor(commands), "email", "queued")
+                        .worker("worker-1")
+                        .openSession(
+                                job -> {
+                                    enteredHandler.countDown();
+                                    try {
+                                        new CountDownLatch(1).await();
+                                    } catch (InterruptedException failure) {
+                                        interruptedHandler.countDown();
+                                        throw failure;
+                                    }
+                                    return "unreachable";
+                                });
+
+        try (session) {
+            Future<QueueWorkerResult> active = caller.submit(session::runOnce);
+            assertTrue(enteredHandler.await(2, TimeUnit.SECONDS));
+            assertThrows(TimeoutException.class, () -> active.get(50, TimeUnit.MILLISECONDS));
+
+            assertFalse(session.close(Duration.ZERO));
+            assertTrue(interruptedHandler.await(2, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> active.get(2, TimeUnit.SECONDS));
+            assertEquals(0, commands.count("FLOW.RETRY"));
+            assertEquals(0, commands.count("FLOW.COMPLETE"));
+        } finally {
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void sessionTimeoutCancelsAnAsyncStepBehindADependentHandlerStage() throws Exception {
+        AsyncStepWorkerCommandExecutor commands = new AsyncStepWorkerCommandExecutor();
+        CountDownLatch providerStarted = new CountDownLatch(1);
+        CountDownLatch providerStopped = new CountDownLatch(1);
+        CompletableFuture<String> providerStage = new CompletableFuture<>();
+        providerStage.whenComplete((ignored, failure) -> providerStopped.countDown());
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        Workflow workflow =
+                new Workflow(
+                                FerricStoreClient.fromExecutor(commands, new StringCodec()),
+                                "order",
+                                "created")
+                        .stateAsync(
+                                "created",
+                                context ->
+                                        context.stepAsync(
+                                                        "charge-customer:v1",
+                                                        () -> {
+                                                            providerStarted.countDown();
+                                                            return providerStage;
+                                                        },
+                                                        "charged",
+                                                        String.class)
+                                                .thenApply(ignored -> Outcomes.complete("done")));
+        WorkflowWorkerSession session =
+                workflow.worker("worker-1", List.of("created")).openSession();
+
+        try (session) {
+            Future<Integer> active = caller.submit(session::runOnce);
+            assertTrue(providerStarted.await(2, TimeUnit.SECONDS));
+
+            assertFalse(session.close(Duration.ZERO));
+
+            assertThrows(ExecutionException.class, () -> active.get(2, TimeUnit.SECONDS));
+            assertTrue(providerStopped.await(2, TimeUnit.SECONDS));
+            assertTrue(providerStage.isCancelled());
+            assertEquals(0, commands.count("FLOW.STEP_CONTINUE"));
+            assertEquals(0, commands.count("FLOW.COMPLETE"));
+            assertEquals(0, commands.count("FLOW.RETRY"));
+        } finally {
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void partialExecutorRejectionKeepsAcceptedTaskBodiesTrackedUntilTheyExit() throws Exception {
+        WorkerCommandExecutor commands =
+                new WorkerCommandExecutor(
+                        List.of(flowRecord("job-1", "queued"), flowRecord("job-2", "queued")));
+        CountDownLatch enteredHandler = new CountDownLatch(1);
+        CountDownLatch releaseHandler = new CountDownLatch(1);
+        CountDownLatch exitedHandler = new CountDownLatch(1);
+        ThreadPoolExecutor workers =
+                new ThreadPoolExecutor(
+                        1,
+                        1,
+                        0,
+                        TimeUnit.MILLISECONDS,
+                        new SynchronousQueue<>(),
+                        new ThreadPoolExecutor.AbortPolicy());
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        QueueWorkerSession session =
+                new Queue(FerricStoreClient.fromExecutor(commands), "email", "queued")
+                        .worker("worker-1")
+                        .batchSize(2)
+                        .concurrency(2)
+                        .executor(workers)
+                        .openSession(
+                                job -> {
+                                    enteredHandler.countDown();
+                                    try {
+                                        releaseHandler.await();
+                                    } catch (InterruptedException ignored) {
+                                        try {
+                                            releaseHandler.await();
+                                        } catch (InterruptedException failure) {
+                                            Thread.currentThread().interrupt();
+                                        }
+                                    } finally {
+                                        exitedHandler.countDown();
+                                    }
+                                    return "done";
+                                });
+
+        try (session) {
+            Future<QueueWorkerResult> active = caller.submit(session::runOnce);
+            assertTrue(enteredHandler.await(2, TimeUnit.SECONDS));
+
+            assertFalse(session.close(Duration.ZERO));
+            releaseHandler.countDown();
+
+            assertThrows(ExecutionException.class, () -> active.get(2, TimeUnit.SECONDS));
+            assertTrue(exitedHandler.await(2, TimeUnit.SECONDS));
+            assertEquals(1, commands.count("FLOW.COMPLETE"));
+            assertEquals(0, commands.count("FLOW.RETRY"));
+        } finally {
+            releaseHandler.countDown();
+            caller.shutdownNow();
+            workers.shutdownNow();
         }
     }
 
@@ -241,6 +387,48 @@ final class WorkerSessionTest {
                 return claimResponse;
             }
             return "OK";
+        }
+
+        private int count(String command) {
+            synchronized (calls) {
+                return (int) calls.stream().filter(call -> command.equals(call.get(0))).count();
+            }
+        }
+    }
+
+    private static final class AsyncStepWorkerCommandExecutor implements CommandExecutor {
+        private final List<List<Object>> calls = Collections.synchronizedList(new ArrayList<>());
+
+        @Override
+        public Object execute(List<Object> args) {
+            calls.add(List.copyOf(args));
+            if ("FLOW.CLAIM_DUE".equals(args.get(0))) {
+                return List.of(claim());
+            }
+            if ("FLOW.EXTEND_LEASE".equals(args.get(0))) {
+                return claim();
+            }
+            return "OK";
+        }
+
+        private Object claim() {
+            return Resp.testMap(
+                    "id",
+                    "flow-1",
+                    "type",
+                    "order",
+                    "state",
+                    "running",
+                    "run_state",
+                    "created",
+                    "partition_key",
+                    "p1",
+                    "lease_token",
+                    "lease-flow-1",
+                    "fencing_token",
+                    1L,
+                    "version",
+                    1L);
         }
 
         private int count(String command) {

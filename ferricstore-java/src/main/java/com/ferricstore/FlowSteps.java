@@ -20,7 +20,14 @@ public final class FlowSteps {
         this.codec = Objects.requireNonNull(codec, "codec");
     }
 
-    /** Transitions a leased run and acquires the next step in one durable command. */
+    /**
+     * Transitions a leased run and acquires the next step in one durable command.
+     *
+     * @deprecated Prefer {@link FerricStoreClient#advance(ClaimedFlow, String)} for state-only
+     *     continuation or {@link FerricStoreClient#step(ClaimedFlow, String,
+     *     java.util.concurrent.Callable, String)} for a journaled closure.
+     */
+    @Deprecated(since = "0.2.0")
     public Object continueStep(ContinueOptions options) {
         Objects.requireNonNull(options, "options");
         Object effectiveNow = options.nowMs();
@@ -69,6 +76,17 @@ public final class FlowSteps {
                     "FLOW.STEP_CONTINUE succeeded but record " + options.id() + " was not found");
         }
         return record;
+    }
+
+    /**
+     * Compatibility spelling for the low-level step-continuation command.
+     *
+     * @deprecated Prefer {@link FerricStoreClient#advance(ClaimedFlow, String)} or {@link
+     *     FerricStoreClient#step(ClaimedFlow, String, java.util.concurrent.Callable, String)}.
+     */
+    @Deprecated(since = "0.2.0")
+    public Object stepContinue(ContinueOptions options) {
+        return continueStep(options);
     }
 
     /** Runs a deterministic state chain for multiple new run IDs in one durable command. */

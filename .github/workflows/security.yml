@@ -38,9 +38,9 @@ jobs:
           distribution: temurin
           java-version: 21
           cache: maven
-      - uses: github/codeql-action/init@v4
+      - uses: github/codeql-action/init@v4.37.3
         with:
           languages: java-kotlin
           queries: security-and-quality
       - run: mvn -B -DskipTests package
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@v4.37.3

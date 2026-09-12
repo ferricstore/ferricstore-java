@@ -2,6 +2,7 @@ package com.ferricstore;
 
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
@@ -16,6 +17,10 @@ final class IntegrationTestEnvironment {
 
     static FerricStoreClient connectJson() {
         return connect(new JsonCodec());
+    }
+
+    static FerricStoreClient connectJsonAt(String url) {
+        return connect(new JsonCodec(), url);
     }
 
     static FerricStoreClient connectRaw() {
@@ -33,12 +38,19 @@ final class IntegrationTestEnvironment {
     }
 
     static boolean isHttpIntegration() {
-        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
+        String url = transportUrl();
         return url.startsWith("http://") || url.startsWith("https://");
     }
 
+    static String transportUrl() {
+        return System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
+    }
+
     private static FerricStoreClient connect(Codec codec) {
-        String url = System.getenv().getOrDefault("FERRICSTORE_URL", "ferric://127.0.0.1:6388");
+        return connect(codec, transportUrl());
+    }
+
+    private static FerricStoreClient connect(Codec codec, String url) {
         String caFile = System.getenv("FERRICSTORE_CA_FILE");
         if (!(url.startsWith("http://") || url.startsWith("https://"))) {
             NativeTransportOptions.Builder options = NativeTransportOptions.builder();
@@ -59,6 +71,15 @@ final class IntegrationTestEnvironment {
                                                         .getOrDefault(
                                                                 "FERRICSTORE_HTTP_FORMAT",
                                                                 "json")));
+        String version = System.getenv().getOrDefault("FERRICSTORE_HTTP_VERSION", "h1");
+        options.preferredVersion(
+                switch (version) {
+                    case "h1" -> HttpClient.Version.HTTP_1_1;
+                    case "h2" -> HttpClient.Version.HTTP_2;
+                    default ->
+                            throw new IllegalStateException(
+                                    "FERRICSTORE_HTTP_VERSION must be h1 or h2");
+                });
         if (url.startsWith("http://")) {
             options.allowInsecureBasicAuthentication(true);
         }
@@ -66,6 +87,20 @@ final class IntegrationTestEnvironment {
             options.sslContext(trustContext(Path.of(caFile)));
         }
         return FerricStoreClient.connect(url, codec, options.build());
+    }
+
+    static void assertExpectedHttpVersion(FerricStoreClient client) {
+        if (!isHttpIntegration()) {
+            return;
+        }
+        HttpClient.Version expected =
+                "h2".equals(System.getenv().getOrDefault("FERRICSTORE_HTTP_VERSION", "h1"))
+                        ? HttpClient.Version.HTTP_2
+                        : HttpClient.Version.HTTP_1_1;
+        if (client.observedHttpVersion() != expected) {
+            throw new AssertionError(
+                    "expected " + expected + " but observed " + client.observedHttpVersion());
+        }
     }
 
     private static String requiredEnvironment(String name) {

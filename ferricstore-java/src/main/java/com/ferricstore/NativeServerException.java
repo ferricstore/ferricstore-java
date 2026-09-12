@@ -5,7 +5,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** A structured non-success response returned by the FerricStore native server. */
-public final class NativeServerException extends FerricStoreException {
+public final class NativeServerException extends FerricStoreException
+        implements RequestDeliveryFailure {
     private static final long serialVersionUID = 1L;
 
     private final int status;
@@ -42,6 +43,48 @@ public final class NativeServerException extends FerricStoreException {
 
     public Long retryAfterMs() {
         return retryAfterMs;
+    }
+
+    @Override
+    public RequestDelivery delivery() {
+        if (knownRejectionStatus(status)
+                || Boolean.TRUE.equals(safeToRetry)
+                || knownRejectionCode(fields(raw))) {
+            return RequestDelivery.REJECTED;
+        }
+        return RequestDelivery.UNKNOWN;
+    }
+
+    private static boolean knownRejectionStatus(int value) {
+        return value == NativeProtocol.STATUS_AUTH
+                || value == NativeProtocol.STATUS_NOPERM
+                || value == NativeProtocol.STATUS_BUSY
+                || value == NativeProtocol.STATUS_REROUTE
+                || value == NativeProtocol.STATUS_BAD_REQUEST;
+    }
+
+    private static boolean knownRejectionCode(Map<String, Object> fields) {
+        String code = text(fields.get("code"));
+        if (code.isEmpty()) {
+            code = text(fields.get("error_code"));
+        }
+        return switch (code) {
+            case "auth",
+                    "unauthorized",
+                    "noperm",
+                    "forbidden",
+                    "bad_request",
+                    "invalid_command",
+                    "invalid_request",
+                    "not_found",
+                    "flow_not_found",
+                    "stale_lease",
+                    "wrong_state",
+                    "conflict",
+                    "request_too_large" ->
+                    true;
+            default -> false;
+        };
     }
 
     private static String message(int status, Object raw) {

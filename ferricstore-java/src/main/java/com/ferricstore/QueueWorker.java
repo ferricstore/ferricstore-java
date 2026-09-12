@@ -78,54 +78,49 @@ public final class QueueWorker {
     }
 
     QueueWorkerResult runOnce(QueueHandler handler, WorkerExecutorLease executorLease) {
-        List<FlowRecord> jobs =
-                client.claimDue(
-                        ClaimDueOptions.builder(type, worker)
-                                .state(state)
-                                .payload(true)
-                                .limit(batchSize)
-                                .build());
-        List<JobResult> results =
-                WorkerExecutors.run(jobs, concurrency, executorLease, job -> apply(job, handler));
-        return new QueueWorkerResult(
-                jobs.size(),
-                count(results, JobResult.COMPLETED),
-                count(results, JobResult.RETRIED),
-                count(results, JobResult.FAILED));
+        int claimed = 0;
+        int completed = 0;
+        int retried = 0;
+        int failed = 0;
+        while (claimed < batchSize) {
+            int claimLimit = Math.min(concurrency, batchSize - claimed);
+            List<FlowRecord> jobs =
+                    client.claimDue(
+                            ClaimDueOptions.builder(type, worker)
+                                    .state(state)
+                                    .payload(true)
+                                    .limit(claimLimit)
+                                    .build());
+            if (jobs.size() > claimLimit) {
+                throw new FerricStoreException("FLOW.CLAIM_DUE returned more jobs than requested");
+            }
+            if (jobs.isEmpty()) {
+                break;
+            }
+            List<JobResult> results =
+                    WorkerExecutors.run(
+                            jobs, concurrency, executorLease, job -> apply(job, handler));
+            claimed += jobs.size();
+            completed += count(results, JobResult.COMPLETED);
+            retried += count(results, JobResult.RETRIED);
+            failed += count(results, JobResult.FAILED);
+            if (jobs.size() < claimLimit) {
+                break;
+            }
+        }
+        return new QueueWorkerResult(claimed, completed, retried, failed);
     }
 
     private JobResult apply(FlowRecord job, QueueHandler handler) {
+        Object result;
         try {
-            Object result = handler.handle(job);
-            Outcome outcome = result instanceof Outcome typed ? typed : Outcomes.complete(result);
-            if (outcome instanceof CompleteOutcome complete) {
-                client.complete(
-                        CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
-                                .partitionKey(job.partitionKey())
-                                .result(complete.result())
-                                .payload(complete.payload())
-                                .build());
-                return JobResult.COMPLETED;
-            }
-            if (outcome instanceof RetryOutcome retry) {
-                client.retry(
-                        RetryOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
-                                .partitionKey(job.partitionKey())
-                                .error(retry.error())
-                                .payload(retry.payload())
-                                .build());
-                return JobResult.RETRIED;
-            }
-            if (outcome instanceof FailOutcome fail) {
-                client.fail(
-                        FailOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
-                                .partitionKey(job.partitionKey())
-                                .error(fail.error())
-                                .payload(fail.payload())
-                                .build());
-                return JobResult.FAILED;
-            }
-            throw new FerricStoreException("Queue handlers cannot return transition outcomes");
+            result = handler.handle(job);
+        } catch (java.util.concurrent.CancellationException cancellation) {
+            throw cancellation;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new FerricStoreException(
+                    "queue handler was interrupted; no retry was written", interrupted);
         } catch (Exception e) {
             client.retry(
                     RetryOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
@@ -134,6 +129,35 @@ public final class QueueWorker {
                             .build());
             return JobResult.RETRIED;
         }
+        Outcome outcome = result instanceof Outcome typed ? typed : Outcomes.complete(result);
+        if (outcome instanceof CompleteOutcome complete) {
+            client.complete(
+                    CompleteOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                            .partitionKey(job.partitionKey())
+                            .result(complete.result())
+                            .payload(complete.payload())
+                            .build());
+            return JobResult.COMPLETED;
+        }
+        if (outcome instanceof RetryOutcome retry) {
+            client.retry(
+                    RetryOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                            .partitionKey(job.partitionKey())
+                            .error(retry.error())
+                            .payload(retry.payload())
+                            .build());
+            return JobResult.RETRIED;
+        }
+        if (outcome instanceof FailOutcome fail) {
+            client.fail(
+                    FailOptions.builder(job.id(), job.leaseToken(), job.fencingToken())
+                            .partitionKey(job.partitionKey())
+                            .error(fail.error())
+                            .payload(fail.payload())
+                            .build());
+            return JobResult.FAILED;
+        }
+        throw new FerricStoreException("Queue handlers cannot return transition outcomes");
     }
 
     private static int count(List<JobResult> results, JobResult expected) {

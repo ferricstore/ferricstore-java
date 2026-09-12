@@ -285,8 +285,95 @@ final class NativeExecutorTest {
                 }
                 commands.add(List.of());
 
-                assertThrows(
-                        IllegalArgumentException.class, () -> executor.pipelineAsync(commands));
+                CompletableFuture<List<Object>> response = executor.pipelineAsync(commands);
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+                NativeProtocolException protocol =
+                        assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertEquals(RequestDelivery.NOT_SENT, protocol.delivery());
+                served.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void flowQueryEncodingFailureIsAsynchronousNotSentAndWritesNoFrame() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    socket.setSoTimeout(500);
+                                    assertThrows(
+                                            SocketTimeoutException.class,
+                                            () -> readRequest(socket));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                CompletableFuture<Object> response =
+                        executor.flowQueryAsync(
+                                "FROM jobs WHERE partition = :partition",
+                                Map.of("partition", new Object()));
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+                NativeProtocolException protocol =
+                        assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertEquals(RequestDelivery.NOT_SENT, protocol.delivery());
+                served.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void localInvalidCommandPreservesItsPublicTypeAndWritesNoFrame() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    socket.setSoTimeout(500);
+                                    assertThrows(
+                                            SocketTimeoutException.class,
+                                            () -> readRequest(socket));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                CompletableFuture<Object> response =
+                        executor.executeAsync(List.of("FLOW.VALUE.MGET"));
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+                InvalidCommandException invalid =
+                        assertInstanceOf(InvalidCommandException.class, failure.getCause());
+                assertEquals(RequestDelivery.NOT_SENT, invalid.delivery());
                 served.get(5, TimeUnit.SECONDS);
             }
         } finally {
@@ -982,6 +1069,7 @@ final class NativeExecutorTest {
     void malformedCompactResponseFailsTheRemovedRequestWithoutWaitingForItsTimeout()
             throws Exception {
         ExecutorService tasks = Executors.newSingleThreadExecutor();
+        CountDownLatch allowServerClose = new CountDownLatch(1);
         try (ServerSocket server = new ServerSocket(0)) {
             Future<Void> served =
                     tasks.submit(
@@ -1000,6 +1088,7 @@ final class NativeExecutorTest {
                                             pipeline.identity(),
                                             NativeProtocol.FLAG_CUSTOM_PAYLOAD,
                                             new byte[] {0, 0, (byte) 0x95});
+                                    assertTrue(allowServerClose.await(2, TimeUnit.SECONDS));
                                 }
                                 return null;
                             });
@@ -1013,8 +1102,10 @@ final class NativeExecutorTest {
                                 ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
                 assertInstanceOf(NativeProtocolException.class, failure.getCause());
             }
+            allowServerClose.countDown();
             served.get(5, TimeUnit.SECONDS);
         } finally {
+            allowServerClose.countDown();
             tasks.shutdownNow();
         }
     }

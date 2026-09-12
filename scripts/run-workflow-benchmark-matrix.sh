@@ -38,7 +38,7 @@ case "$samples" in
 esac
 
 mkdir -p "$output_dir"
-mise exec java@temurin-21 -- mvn -q -pl ferricstore-examples -am -DskipTests package
+mise exec java@temurin-21 -- mvn -q -pl ferricstore-examples -am -DskipTests -Djacoco.skip=true install
 sdk_dependency_classpath="$(mise exec java@temurin-21 -- mvn -q -pl ferricstore-java dependency:build-classpath -Dmdep.outputFile=/dev/stdout)"
 example_dependency_classpath="$(mise exec java@temurin-21 -- mvn -q -pl ferricstore-examples dependency:build-classpath -Dmdep.outputFile=/dev/stdout)"
 benchmark_classpath="$sdk_dependency_classpath:$example_dependency_classpath"

@@ -29,7 +29,7 @@ final class FerricFlowStateMachineTest {
                         .workflow("order", "created")
                         .state("created", context -> machine.apply(context, "CHARGE"));
 
-        int applied = workflow.worker("worker-1", List.of("created")).runOnce();
+        int applied = workflow.worker("worker-1", List.of("created")).batchSize(1).runOnce();
 
         assertEquals(1, applied);
         assertEquals(1, executor.count("FLOW.CLAIM_DUE"));
@@ -37,7 +37,7 @@ final class FerricFlowStateMachineTest {
         assertEquals(1, executor.count("FLOW.TRANSITION"));
         List<Object> transition = executor.first("FLOW.TRANSITION");
         assertEquals("order-1", transition.get(1));
-        assertEquals("created", transition.get(2));
+        assertEquals("running", transition.get(2));
         assertEquals("charged", transition.get(3));
     }
 
@@ -54,7 +54,7 @@ final class FerricFlowStateMachineTest {
                                 "charged",
                                 context -> machine.apply(context, "COMPLETE", Map.of("ok", true)));
 
-        int applied = workflow.worker("worker-1", List.of("charged")).runOnce();
+        int applied = workflow.worker("worker-1", List.of("charged")).batchSize(1).runOnce();
 
         assertEquals(1, applied);
         assertEquals(1, executor.count("FLOW.COMPLETE"));
@@ -75,7 +75,7 @@ final class FerricFlowStateMachineTest {
                         .workflow("order", "created")
                         .state("created", context -> machine.apply(context, "UNKNOWN"));
 
-        int applied = workflow.worker("worker-1", List.of("created")).runOnce();
+        int applied = workflow.worker("worker-1", List.of("created")).batchSize(1).runOnce();
 
         assertEquals(1, applied);
         assertEquals(1, executor.count("FLOW.FAIL"));
@@ -93,7 +93,7 @@ final class FerricFlowStateMachineTest {
                         .workflow("order", "created")
                         .state("charged", context -> machine.apply(context, "REJECT"));
 
-        int applied = workflow.worker("worker-1", List.of("charged")).runOnce();
+        int applied = workflow.worker("worker-1", List.of("charged")).batchSize(1).runOnce();
 
         assertEquals(1, applied);
         assertEquals(1, executor.count("FLOW.FAIL"));
@@ -111,7 +111,7 @@ final class FerricFlowStateMachineTest {
                         .workflow("order", "created")
                         .state("charged", context -> machine.apply(context, "WAIT"));
 
-        int applied = workflow.worker("worker-1", List.of("charged")).runOnce();
+        int applied = workflow.worker("worker-1", List.of("charged")).batchSize(1).runOnce();
 
         assertEquals(1, applied);
         assertEquals(1, executor.count("FLOW.RETRY"));
@@ -129,7 +129,7 @@ final class FerricFlowStateMachineTest {
                         .workflow("order", "created")
                         .state("charged", context -> machine.apply(context, "ARCHIVE"));
 
-        int applied = workflow.worker("worker-1", List.of("charged")).runOnce();
+        int applied = workflow.worker("worker-1", List.of("charged")).batchSize(1).runOnce();
 
         assertEquals(1, applied);
         assertEquals(1, executor.count("FLOW.COMPLETE"));
@@ -150,7 +150,7 @@ final class FerricFlowStateMachineTest {
                         .workflow("order", "created")
                         .state("created", context -> machine.apply(context, "UNKNOWN"));
 
-        int applied = workflow.worker("worker-1", List.of("created")).runOnce();
+        int applied = workflow.worker("worker-1", List.of("created")).batchSize(1).runOnce();
 
         assertEquals(1, applied);
         assertEquals(1, executor.count("FLOW.RETRY"));
@@ -170,7 +170,7 @@ final class FerricFlowStateMachineTest {
                         .workflow("order", "created")
                         .state("created", context -> machine.apply(context, "UNKNOWN"));
 
-        int applied = workflow.worker("worker-1", List.of("created")).runOnce();
+        int applied = workflow.worker("worker-1", List.of("created")).batchSize(1).runOnce();
 
         assertEquals(1, applied);
         assertEquals(1, executor.count("FLOW.RETRY"));
@@ -252,6 +252,8 @@ final class FerricFlowStateMachineTest {
                 "type",
                 "order",
                 "state",
+                "running",
+                "run_state",
                 state,
                 "partition_key",
                 "p1",

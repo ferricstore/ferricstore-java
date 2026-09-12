@@ -2,7 +2,20 @@
 set -euo pipefail
 
 expected_group_id="io.github.ferricstore"
-expected_version="0.1.4"
+expected_version="$(
+  mvn -q -Dstyle.color=never help:evaluate \
+    -Dexpression=project.version -DforceStdout 2>/dev/null \
+    | tr -d '\r' \
+    | tail -n 1
+)"
+release_tag="${RELEASE_TAG:-}"
+if [[ -z "${release_tag}" && "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+  release_tag="${GITHUB_REF_NAME:-}"
+fi
+if [[ -n "${release_tag}" && "${release_tag}" != "v${expected_version}" ]]; then
+  echo "Release tag ${release_tag} does not match Maven version ${expected_version}" >&2
+  exit 1
+fi
 published_modules=(
   ferricstore-java
   ferricstore-spring-statemachine
@@ -47,8 +60,8 @@ done
 mvn -q -Dstyle.color=never help:effective-pom \
   -Doutput=target/release-effective-pom.xml
 
-if ! grep -q '<waitUntil>published</waitUntil>' target/release-effective-pom.xml; then
-  echo "Central release must wait until artifacts are published" >&2
+if ! grep -q '<waitUntil>uploaded</waitUntil>' target/release-effective-pom.xml; then
+  echo "Central upload must return its deployment ID without waiting for publication" >&2
   exit 1
 fi
 
