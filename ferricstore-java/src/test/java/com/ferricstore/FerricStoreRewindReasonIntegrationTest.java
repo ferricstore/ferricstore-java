@@ -84,16 +84,22 @@ final class FerricStoreRewindReasonIntegrationTest {
     }
 
     private static String eventId(Object event) {
-        if (event instanceof List<?> list && !list.isEmpty()) return text(list.get(0));
+        if (event instanceof List<?> list && !list.isEmpty()) {
+            return text(list.get(0));
+        }
         Object value = field(event, "event_id");
-        if (value == null) value = field(event, "id");
+        if (value == null) {
+            value = field(event, "id");
+        }
         assertNotNull(value);
         return text(value);
     }
 
     private static Object eventField(Object event, String name) {
         Object fields = event;
-        if (event instanceof List<?> list && list.size() > 1) fields = list.get(1);
+        if (event instanceof List<?> list && list.size() > 1) {
+            fields = list.get(1);
+        }
         Object value = field(fields, name);
         if (value == null && fields instanceof Map<?, ?> map && map.get("fields") != null) {
             value = field(map.get("fields"), name);
@@ -116,7 +122,9 @@ final class FerricStoreRewindReasonIntegrationTest {
     }
 
     private static String text(Object value) {
-        if (value instanceof byte[] bytes) return new String(bytes, StandardCharsets.UTF_8);
+        if (value instanceof byte[] bytes) {
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
         return Resp.string(value);
     }
 }
