@@ -283,6 +283,47 @@ final class FerricStoreIntegrationTest {
     }
 
     @Test
+    void rawPolicyCommandPreservesTextualNumericOptions() {
+        assumeIntegration();
+
+        try (FerricStoreClient client = connectJson()) {
+            String type = "java-sdk:policy-raw-values:" + suffix();
+            assertNotNull(
+                    client.command(
+                            List.of(
+                                    "FLOW.POLICY.SET",
+                                    type,
+                                    "EXPECTED_GENERATION",
+                                    bytes("0"),
+                                    "REPLACE",
+                                    "true",
+                                    "MAX_ACTIVE_MS",
+                                    bytes("30000"),
+                                    "MAX_RETRIES",
+                                    "2",
+                                    "BACKOFF",
+                                    bytes("fixed"),
+                                    "BASE_MS",
+                                    "100",
+                                    "MAX_MS",
+                                    bytes("1000"),
+                                    "JITTER_PCT",
+                                    "0",
+                                    "EXHAUSTED_TO",
+                                    "failed",
+                                    "RETENTION_TTL_MS",
+                                    bytes("60000"),
+                                    "HISTORY_MAX_EVENTS",
+                                    "25")));
+
+            Map<String, Object> policy = Resp.parseKv(client.policyGet(type, null));
+            assertEquals(2L, Resp.number(Resp.map(policy.get("retry")).get("max_retries")));
+            assertEquals(30_000L, Resp.number(policy.get("max_active_ms")));
+            assertEquals(60_000L, Resp.number(Resp.map(policy.get("retention")).get("ttl_ms")));
+        }
+    }
+
+    @Test
     void queueAndWorkflowWrappersRoundTripAgainstLocalServer() {
         assumeIntegration();
 
@@ -745,10 +786,33 @@ final class FerricStoreIntegrationTest {
                         FlowPolicyOptions.builder()
                                 .indexedAttribute("tenant")
                                 .indexedStateMeta("version")
+                                .retentionTtlMs(60_000L)
                                 .retry(new RetryPolicy(2, "fixed", 10L, 100L, 0, "failed"))
-                                .statePolicy("claim-attributes", FlowStatePolicy.fifo())
+                                .statePolicy(
+                                        "claim-attributes",
+                                        FlowStatePolicy.fifo(
+                                                new RetryPolicy(
+                                                        4,
+                                                        "exponential",
+                                                        20L,
+                                                        200L,
+                                                        5,
+                                                        "review-failed")))
                                 .build()));
-        assertNotNull(client.policyGet(type, "claim-attributes"));
+        Map<String, Object> policy = Resp.parseKv(client.policyGet(type, null));
+        Map<String, Object> retry = Resp.map(policy.get("retry"));
+        assertEquals(2L, Resp.number(retry.get("max_retries")));
+        assertEquals("failed", text(retry.get("exhausted_to")));
+        Map<String, Object> typeBackoff = Resp.map(retry.get("backoff"));
+        assertEquals("fixed", text(typeBackoff.get("kind")));
+        assertEquals(10L, Resp.number(typeBackoff.get("base_ms")));
+        Map<String, Object> retention = Resp.map(policy.get("retention"));
+        assertEquals(60_000L, Resp.number(retention.get("ttl_ms")));
+        Map<String, Object> statePolicy = Resp.parseKv(client.policyGet(type, "claim-attributes"));
+        Map<String, Object> stateRetry = Resp.map(statePolicy.get("retry"));
+        assertEquals(4L, Resp.number(stateRetry.get("max_retries")));
+        assertEquals("review-failed", text(stateRetry.get("exhausted_to")));
+        assertEquals("exponential", text(Resp.map(stateRetry.get("backoff")).get("kind")));
 
         String id = "java-sdk:admin:attributes:" + suffix;
         assertNotNull(
@@ -1356,13 +1420,18 @@ final class FerricStoreIntegrationTest {
         ClaimedFlow rewind = createAndClaim(client, type, suffix, "rewind", "queued", now, 30_000);
         String createdEventId =
                 eventId(client.history(rewind.id(), rewind.partitionKey(), 10).get(0));
-        client.complete(
-                CompleteOptions.builder(
-                                rewind.job().id(),
-                                rewind.job().leaseToken(),
-                                rewind.job().fencingToken())
-                        .partitionKey(rewind.job().partitionKey())
-                        .build());
+        FlowRecord completed =
+                (FlowRecord)
+                        client.complete(
+                                CompleteOptions.builder(
+                                                rewind.job().id(),
+                                                rewind.job().leaseToken(),
+                                                rewind.job().fencingToken())
+                                        .partitionKey(rewind.job().partitionKey())
+                                        .returnRecord(true)
+                                        .build());
+        assertNotNull(completed);
+        assertNull(completed.leaseToken());
         FlowRecord rewound =
                 (FlowRecord)
                         client.rewind(
@@ -1371,10 +1440,29 @@ final class FerricStoreIntegrationTest {
                                 rewind.partitionKey(),
                                 "completed",
                                 now,
-                                null,
+                                "java-sdk-rewind-reason:" + suffix,
                                 null,
                                 true);
         assertEquals("queued", rewound.state());
+        assertEquals(completed.fencingToken() + 1, rewound.fencingToken());
+        assertEquals(completed.version() + 1, rewound.version());
+        assertNull(rewound.leaseToken());
+        Object reasonRef = rewound.raw().get("error_ref");
+        assertNotNull(reasonRef);
+        assertEquals(
+                List.of("java-sdk-rewind-reason:" + suffix),
+                client.valueMGet(List.of(text(reasonRef))));
+        assertTrue(
+                client.history(rewind.id(), rewind.partitionKey(), 20).stream()
+                        .anyMatch(
+                                event ->
+                                        "rewound".equals(text(eventField(event, "event")))
+                                                && text(reasonRef)
+                                                        .equals(
+                                                                text(
+                                                                        eventField(
+                                                                                event,
+                                                                                "error_ref")))));
     }
 
     private static void createManyState(
@@ -1531,6 +1619,18 @@ final class FerricStoreIntegrationTest {
             return value == null ? map.get(name.getBytes(StandardCharsets.UTF_8)) : value;
         }
         return null;
+    }
+
+    private static Object eventField(Object event, String name) {
+        Object fields = event;
+        if (event instanceof List<?> list && list.size() > 1) {
+            fields = list.get(1);
+        }
+        Object value = field(fields, name);
+        if (value == null && fields instanceof Map<?, ?> map && map.get("fields") != null) {
+            value = field(map.get("fields"), name);
+        }
+        return value;
     }
 
     private static List<Object> list(Object value) {

@@ -20,6 +20,10 @@ public record ClaimDueOptions(
         Boolean payload,
         Long payloadMaxBytes,
         List<String> values,
+        /**
+         * Claim/reclaim helpers reject this option before sending because the Java helper has no
+         * typed-map encoding for it.
+         */
         Long valueMaxBytes,
         boolean jobOnly,
         boolean includeState,
@@ -143,6 +147,10 @@ public record ClaimDueOptions(
             return this;
         }
 
+        /**
+         * Sets a named-value response cap. Claim/reclaim currently reject this option instead of
+         * silently dropping it because their Java command helper has no typed-map encoding for it.
+         */
         public Builder valueMaxBytes(long value) {
             this.valueMaxBytes = value;
             return this;

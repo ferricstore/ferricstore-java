@@ -168,7 +168,9 @@ loadScripts(document, 'script');</script>
 <div class="col-last odd-row-color method-summary-table method-summary-table-tab2 method-summary-table-tab4">&nbsp;</div>
 <div class="col-first even-row-color method-summary-table method-summary-table-tab2 method-summary-table-tab4"><code><a href="ClaimDueOptions.Builder.html" title="class in com.ferricstore">ClaimDueOptions.Builder</a></code></div>
 <div class="col-second even-row-color method-summary-table method-summary-table-tab2 method-summary-table-tab4"><code><a href="#valueMaxBytes(long)" class="member-name-link">valueMaxBytes</a><wbr>(long&nbsp;value)</code></div>
-<div class="col-last even-row-color method-summary-table method-summary-table-tab2 method-summary-table-tab4">&nbsp;</div>
+<div class="col-last even-row-color method-summary-table method-summary-table-tab2 method-summary-table-tab4">
+<div class="block">Sets a named-value response cap.</div>
+</div>
 <div class="col-first odd-row-color method-summary-table method-summary-table-tab2 method-summary-table-tab4"><code><a href="ClaimDueOptions.Builder.html" title="class in com.ferricstore">ClaimDueOptions.Builder</a></code></div>
 <div class="col-second odd-row-color method-summary-table method-summary-table-tab2 method-summary-table-tab4"><code><a href="#values(java.util.List)" class="member-name-link">values</a><wbr>(<a href="https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/util/List.html" title="class or interface in java.util" class="external-link">List</a>&lt;<a href="https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/String.html" title="class or interface in java.lang" class="external-link">String</a>&gt;&nbsp;names)</code></div>
 <div class="col-last odd-row-color method-summary-table method-summary-table-tab2 method-summary-table-tab4">&nbsp;</div>
@@ -283,6 +285,8 @@ loadScripts(document, 'script');</script>
 <section class="detail" id="valueMaxBytes(long)">
 <h3>valueMaxBytes</h3>
 <div class="member-signature"><span class="modifiers">public</span>&nbsp;<span class="return-type"><a href="ClaimDueOptions.Builder.html" title="class in com.ferricstore">ClaimDueOptions.Builder</a></span>&nbsp;<span class="element-name">valueMaxBytes</span><wbr><span class="parameters">(long&nbsp;value)</span></div>
+<div class="block">Sets a named-value response cap. Claim/reclaim currently reject this option instead of
+ silently dropping it because their Java command helper has no typed-map encoding for it.</div>
 </section>
 </li>
 <li>

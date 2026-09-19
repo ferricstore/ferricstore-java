@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -209,17 +210,34 @@ final class FerricStoreClientTest {
     void claimDueDecodesResp3Maps() {
         Map<Object, Object> record =
                 Resp.testMap(
-                        "id", bytes("flow-1"),
-                        "type", "order",
-                        "state", "created",
-                        "partition_key", "p1",
-                        "payload", bytes("payload"),
-                        "lease_token", "lease",
-                        "fencing_token", 7L,
-                        "version", bytes("3"),
-                        "parent_flow_id", "parent",
-                        "root_flow_id", "root",
-                        "correlation_id", "corr");
+                        "id",
+                        bytes("flow-1"),
+                        "type",
+                        "order",
+                        "state",
+                        "created",
+                        "partition_key",
+                        "p1",
+                        "payload",
+                        bytes("payload"),
+                        "lease_token",
+                        "lease",
+                        "fencing_token",
+                        7L,
+                        "version",
+                        bytes("3"),
+                        "parent_flow_id",
+                        "parent",
+                        "root_flow_id",
+                        "root",
+                        "correlation_id",
+                        "corr",
+                        "values",
+                        Resp.testMap("selected", bytes("selected")),
+                        "attributes",
+                        Resp.testMap("tenant", bytes("acme")),
+                        "state_meta",
+                        Resp.testMap("created", Resp.testMap("attempt", bytes("1"))));
         FakeExecutor executor = new FakeExecutor(List.of(record));
         FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
 
@@ -233,6 +251,7 @@ final class FerricStoreClientTest {
                                 .nowMs(100)
                                 .payload(true)
                                 .payloadMaxBytes(2048)
+                                .value("selected")
                                 .reclaimExpired(true)
                                 .reclaimRatio(10)
                                 .build());
@@ -256,6 +275,10 @@ final class FerricStoreClientTest {
                         "PAYLOAD",
                         "MAXBYTES",
                         2048L,
+                        "VALUE",
+                        "selected",
+                        "RETURN",
+                        "RECORDS",
                         "RECLAIM_EXPIRED",
                         "true",
                         "RECLAIM_RATIO",
@@ -274,6 +297,11 @@ final class FerricStoreClientTest {
         assertEquals("parent", job.parentFlowId());
         assertEquals("root", job.rootFlowId());
         assertEquals("corr", job.correlationId());
+        assertArrayEquals(bytes("selected"), (byte[]) job.values().get("selected"));
+        assertEquals(1, job.values().size());
+        assertArrayEquals(bytes("acme"), (byte[]) job.attributes().get("tenant"));
+        assertArrayEquals(
+                bytes("1"), (byte[]) Resp.map(job.stateMeta().get("created")).get("attempt"));
     }
 
     @Test
@@ -304,6 +332,25 @@ final class FerricStoreClientTest {
         assertEquals("lease", record.leaseToken());
         assertEquals(7L, record.fencingToken());
         assertEquals(3L, record.version());
+    }
+
+    @Test
+    void rejectsUnsupportedValueMaxBytesBeforeClaimOrReclaimDispatch() {
+        FakeExecutor executor = new FakeExecutor(List.of());
+        FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+        ClaimDueOptions options =
+                ClaimDueOptions.builder("order", "worker-1")
+                        .value("selected")
+                        .valueMaxBytes(1024)
+                        .build();
+
+        IllegalArgumentException claimError =
+                assertThrows(IllegalArgumentException.class, () -> client.claimDue(options));
+        assertTrue(claimError.getMessage().contains("do not currently encode valueMaxBytes"));
+        assertThrows(IllegalArgumentException.class, () -> client.claimJobs(options));
+        assertThrows(IllegalArgumentException.class, () -> client.reclaim(options));
+        assertThrows(IllegalArgumentException.class, () -> client.reclaimJobs(options));
+        assertEquals(List.of(), executor.calls);
     }
 
     @Test
@@ -365,7 +412,9 @@ final class FerricStoreClientTest {
                         "PARTITIONS",
                         2,
                         "p1",
-                        "p2"),
+                        "p2",
+                        "RETURN",
+                        "RECORDS"),
                 executor.last());
     }
 
@@ -453,7 +502,14 @@ final class FerricStoreClientTest {
                                         "lease_token",
                                         "lease-1",
                                         "fencing_token",
-                                        3L)));
+                                        3L,
+                                        "values",
+                                        Resp.testMap("selected", bytes("selected")),
+                                        "attributes",
+                                        Resp.testMap("tenant", bytes("acme")),
+                                        "state_meta",
+                                        Resp.testMap(
+                                                "running", Resp.testMap("attempt", bytes("2"))))));
         FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
 
         List<FlowRecord> jobs =
@@ -463,7 +519,8 @@ final class FerricStoreClientTest {
                                 .leaseMs(5000)
                                 .limit(10)
                                 .nowMs(100)
-                                .payload(false)
+                                .payload(true)
+                                .value("selected")
                                 .build());
 
         assertArgs(
@@ -480,12 +537,22 @@ final class FerricStoreClientTest {
                         100L,
                         "PARTITION",
                         "p1",
-                        "NOPAYLOAD"),
+                        "PAYLOAD",
+                        "VALUE",
+                        "selected",
+                        "RETURN",
+                        "RECORDS"),
                 executor.last());
         assertEquals(1, jobs.size());
         assertEquals("flow-1", jobs.get(0).id());
         assertEquals("lease-1", jobs.get(0).leaseToken());
         assertEquals(3L, jobs.get(0).fencingToken());
+        assertArrayEquals(bytes("selected"), (byte[]) jobs.get(0).values().get("selected"));
+        assertEquals(1, jobs.get(0).values().size());
+        assertArrayEquals(bytes("acme"), (byte[]) jobs.get(0).attributes().get("tenant"));
+        assertArrayEquals(
+                bytes("2"),
+                (byte[]) Resp.map(jobs.get(0).stateMeta().get("running")).get("attempt"));
     }
 
     @Test
@@ -732,8 +799,8 @@ final class FerricStoreClientTest {
                         "completed",
                         "RUN_AT",
                         120L,
-                        "REASON_REF",
-                        "reason"),
+                        "REASON",
+                        bytes("reason")),
                 executor.calls.get(0));
         assertArgs(List.of("FLOW.GET", "flow-1", "PARTITION", "p1"), executor.calls.get(1));
         assertEquals("flow-1", rewound.id());

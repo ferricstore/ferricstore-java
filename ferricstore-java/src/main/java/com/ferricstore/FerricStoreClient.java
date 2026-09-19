@@ -1130,7 +1130,7 @@ public final class FerricStoreClient implements AutoCloseable {
             String partitionKey,
             String expectState,
             Long runAtMs,
-            String reasonRef,
+            String reason,
             Long nowMs,
             boolean returnRecord) {
         long effectiveNowMs = nowMs == null ? nowMs() : nowMs;
@@ -1138,7 +1138,7 @@ public final class FerricStoreClient implements AutoCloseable {
         append(cmd, "PARTITION", partitionKey);
         append(cmd, "EXPECT_STATE", expectState);
         append(cmd, "RUN_AT", runAtMs);
-        append(cmd, "REASON_REF", reasonRef);
+        appendEncoded(cmd, "REASON", codec, reason);
         Object response = command(cmd);
         if (!returnRecord) {
             return response;
@@ -1592,6 +1592,7 @@ public final class FerricStoreClient implements AutoCloseable {
     }
 
     private List<Object> claimCommand(String command, ClaimDueOptions options) {
+        rejectUnsupportedValueMaxBytes(options);
         if (options.state() != null && !options.states().isEmpty()) {
             throw new IllegalArgumentException("state and states are mutually exclusive");
         }
@@ -1627,9 +1628,10 @@ public final class FerricStoreClient implements AutoCloseable {
         for (String value : options.values()) {
             append(cmd, "VALUE", value);
         }
-        append(cmd, "VALUE_MAX_BYTES", options.valueMaxBytes());
         if (options.jobOnly()) {
             append(cmd, "RETURN", compactReturnMode(options, true));
+        } else {
+            append(cmd, "RETURN", "RECORDS");
         }
         appendBool(cmd, "RECLAIM_EXPIRED", options.reclaimExpired());
         append(cmd, "RECLAIM_RATIO", options.reclaimRatio());
@@ -1637,6 +1639,7 @@ public final class FerricStoreClient implements AutoCloseable {
     }
 
     private List<Object> reclaimCommand(ClaimDueOptions options) {
+        rejectUnsupportedValueMaxBytes(options);
         if (!options.states().isEmpty()) {
             throw new IllegalArgumentException("FLOW.RECLAIM does not support states");
         }
@@ -1673,11 +1676,21 @@ public final class FerricStoreClient implements AutoCloseable {
         for (String value : options.values()) {
             append(cmd, "VALUE", value);
         }
-        append(cmd, "VALUE_MAX_BYTES", options.valueMaxBytes());
         if (options.jobOnly()) {
             append(cmd, "RETURN", compactReturnMode(options, false));
+        } else {
+            append(cmd, "RETURN", "RECORDS");
         }
         return cmd;
+    }
+
+    private static void rejectUnsupportedValueMaxBytes(ClaimDueOptions options) {
+        if (options.valueMaxBytes() != null) {
+            throw new IllegalArgumentException(
+                    "Java FLOW.CLAIM_DUE/FLOW.RECLAIM helpers do not currently encode "
+                            + "valueMaxBytes; use payloadMaxBytes for payloads or "
+                            + "FLOW.VALUE.MGET maxBytes for named values");
+        }
     }
 
     private void appendNamedCounts(

@@ -310,6 +310,82 @@ final class FerricStoreFlowArgumentsIntegrationTest {
     }
 
     @Test
+    void fullClaimAndReclaimReturnRecordsWithMetadataAndSelectedValues() {
+        assumeIntegration();
+
+        try (FerricStoreClient client = connectJson()) {
+            String testId = suffix();
+            String type = "java-sdk:flow-args:full-records:" + testId;
+            String partition = "java-sdk:flow-args:full-records:partition:" + testId;
+            String id = "java-sdk:flow-args:full-records:" + testId;
+            long now = System.currentTimeMillis();
+
+            client.create(
+                    CreateOptions.builder(id, type)
+                            .state("queued")
+                            .partitionKey(partition)
+                            .payload(Map.of("kind", "full-record"))
+                            .value("selected", Map.of("answer", 42))
+                            .value("unselected", Map.of("answer", 7))
+                            .attribute("tenant", "java")
+                            .stateMeta("attempt", "one")
+                            .runAtMs(now)
+                            .nowMs(now)
+                            .build());
+
+            List<FlowRecord> claimed =
+                    client.claimDue(
+                            ClaimDueOptions.builder(type, "java-sdk-full-record-claim-worker")
+                                    .state("queued")
+                                    .partitionKey(partition)
+                                    .leaseMs(1)
+                                    .limit(1)
+                                    .nowMs(now)
+                                    .payload(true)
+                                    .value("selected")
+                                    .build());
+            assertEquals(1, claimed.size());
+            FlowRecord claimedRecord = claimed.get(0);
+            assertEquals(id, claimedRecord.id());
+            assertNotNull(claimedRecord.leaseToken());
+            assertEquals(Map.of("kind", "full-record"), claimedRecord.payload());
+            assertEquals(Map.of("answer", 42), claimedRecord.values().get("selected"));
+            assertEquals(1, claimedRecord.values().size());
+            assertEquals("java", text(claimedRecord.attributes().get("tenant")));
+            assertEquals(
+                    "one", text(Resp.map(claimedRecord.stateMeta().get("queued")).get("attempt")));
+            assertTrue(claimedRecord.raw().containsKey("attributes"));
+            assertTrue(claimedRecord.raw().containsKey("state_meta"));
+
+            List<FlowRecord> reclaimed =
+                    client.reclaim(
+                            ClaimDueOptions.builder(type, "java-sdk-full-record-reclaim-worker")
+                                    .partitionKey(partition)
+                                    .leaseMs(30_000)
+                                    .limit(1)
+                                    .nowMs(now + 100)
+                                    .payload(true)
+                                    .value("selected")
+                                    .build());
+            assertEquals(1, reclaimed.size());
+            FlowRecord reclaimedRecord = reclaimed.get(0);
+            assertEquals(id, reclaimedRecord.id());
+            assertNotEquals(claimedRecord.leaseToken(), reclaimedRecord.leaseToken());
+            assertTrue(reclaimedRecord.fencingToken() > claimedRecord.fencingToken());
+            assertTrue(reclaimedRecord.version() > claimedRecord.version());
+            assertEquals(Map.of("kind", "full-record"), reclaimedRecord.payload());
+            assertEquals(Map.of("answer", 42), reclaimedRecord.values().get("selected"));
+            assertEquals(1, reclaimedRecord.values().size());
+            assertEquals("java", text(reclaimedRecord.attributes().get("tenant")));
+            assertEquals(
+                    "one",
+                    text(Resp.map(reclaimedRecord.stateMeta().get("queued")).get("attempt")));
+            assertTrue(reclaimedRecord.raw().containsKey("attributes"));
+            assertTrue(reclaimedRecord.raw().containsKey("state_meta"));
+        }
+    }
+
+    @Test
     void completeManyAndCancelManyApplyRichSameAndMixedPartitionArguments() {
         assumeIntegration();
 
