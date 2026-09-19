@@ -8,7 +8,7 @@ username="sdk-http"
 password="sdk-http-secret"
 denied_username="sdk-http-denied"
 denied_password="sdk-http-denied-secret"
-integration_tests="${FERRICSTORE_INTEGRATION_TESTS:-FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest}"
+integration_tests="${FERRICSTORE_INTEGRATION_TESTS:-FerricStoreIntegrationTest,FerricStoreRewindReasonIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest}"
 
 cleanup() {
   status=$?

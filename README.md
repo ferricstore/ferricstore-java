@@ -335,6 +335,10 @@ With Spring Boot, define one `StateMachineFactory<String, String>` bean and incl
 
 ## Low-Level Flow Commands
 
+Durable rewind reason attribution requires FerricStore OSS `0.11.19` or newer.
+Older supported servers still perform the rewind state transition, but do not
+persist the reason reference.
+
 ```java
 client.create(CreateOptions.builder("order-1", "order")
     .state("created")

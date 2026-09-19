@@ -1420,18 +1420,13 @@ final class FerricStoreIntegrationTest {
         ClaimedFlow rewind = createAndClaim(client, type, suffix, "rewind", "queued", now, 30_000);
         String createdEventId =
                 eventId(client.history(rewind.id(), rewind.partitionKey(), 10).get(0));
-        FlowRecord completed =
-                (FlowRecord)
-                        client.complete(
-                                CompleteOptions.builder(
-                                                rewind.job().id(),
-                                                rewind.job().leaseToken(),
-                                                rewind.job().fencingToken())
-                                        .partitionKey(rewind.job().partitionKey())
-                                        .returnRecord(true)
-                                        .build());
-        assertNotNull(completed);
-        assertNull(completed.leaseToken());
+        client.complete(
+                CompleteOptions.builder(
+                                rewind.job().id(),
+                                rewind.job().leaseToken(),
+                                rewind.job().fencingToken())
+                        .partitionKey(rewind.job().partitionKey())
+                        .build());
         FlowRecord rewound =
                 (FlowRecord)
                         client.rewind(
@@ -1440,29 +1435,10 @@ final class FerricStoreIntegrationTest {
                                 rewind.partitionKey(),
                                 "completed",
                                 now,
-                                "java-sdk-rewind-reason:" + suffix,
+                                null,
                                 null,
                                 true);
         assertEquals("queued", rewound.state());
-        assertEquals(completed.fencingToken() + 1, rewound.fencingToken());
-        assertEquals(completed.version() + 1, rewound.version());
-        assertNull(rewound.leaseToken());
-        Object reasonRef = rewound.raw().get("error_ref");
-        assertNotNull(reasonRef);
-        assertEquals(
-                List.of("java-sdk-rewind-reason:" + suffix),
-                client.valueMGet(List.of(text(reasonRef))));
-        assertTrue(
-                client.history(rewind.id(), rewind.partitionKey(), 20).stream()
-                        .anyMatch(
-                                event ->
-                                        "rewound".equals(text(eventField(event, "event")))
-                                                && text(reasonRef)
-                                                        .equals(
-                                                                text(
-                                                                        eventField(
-                                                                                event,
-                                                                                "error_ref")))));
     }
 
     private static void createManyState(
@@ -1619,18 +1595,6 @@ final class FerricStoreIntegrationTest {
             return value == null ? map.get(name.getBytes(StandardCharsets.UTF_8)) : value;
         }
         return null;
-    }
-
-    private static Object eventField(Object event, String name) {
-        Object fields = event;
-        if (event instanceof List<?> list && list.size() > 1) {
-            fields = list.get(1);
-        }
-        Object value = field(fields, name);
-        if (value == null && fields instanceof Map<?, ?> map && map.get("fields") != null) {
-            value = field(map.get("fields"), name);
-        }
-        return value;
     }
 
     private static List<Object> list(Object value) {
