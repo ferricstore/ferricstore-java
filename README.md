@@ -23,7 +23,7 @@ Artifacts are published under the FerricStore GitHub organization namespace. Jav
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
-  <version>0.2.1</version>
+  <version>0.2.2</version>
 </dependency>
 ```
 
@@ -33,7 +33,7 @@ Spring Boot:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
-  <version>0.2.1</version>
+  <version>0.2.2</version>
 </dependency>
 ```
 
@@ -43,7 +43,7 @@ Optional Spring Statemachine adapter:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
-  <version>0.2.1</version>
+  <version>0.2.2</version>
 </dependency>
 ```
 
@@ -106,7 +106,7 @@ Run the complete HTTP-compatible integration surface through a real TLS
 listener with ACL authentication using:
 
 ```bash
-FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.17@sha256:b1f260a5f01c8976c31daa828e375c8bb2e173f66e8ffc384b548a8b3d223230 \
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.19@sha256:6275175c71a75f2d2a47c30c47a6561f994d8a5e31570fc8bd11a9f6ebcb6b31 \
   scripts/run-http-integration.sh
 ```
 
@@ -334,6 +334,10 @@ The adapter restores the Spring machine from `WorkflowContext.state()` on every 
 With Spring Boot, define one `StateMachineFactory<String, String>` bean and include both the starter and statemachine adapter; the starter exposes a `FerricFlowStateMachine` bean for DI.
 
 ## Low-Level Flow Commands
+
+Durable rewind reason attribution requires FerricStore OSS `0.11.19` or newer.
+Older supported servers still perform the rewind state transition, but do not
+persist the reason reference.
 
 ```java
 client.create(CreateOptions.builder("order-1", "order")

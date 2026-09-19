@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-09-19
+
+- Explicitly request full records for record-mode Flow claim and reclaim calls;
+  compact worker claims remain unchanged.
+- Encode rewind attribution with the configured codec using supported `REASON`
+  instead of the unsupported `REASON_REF` input.
+- Reject unsupported claim/reclaim `valueMaxBytes` before dispatch, with an
+  actionable error instead of silently losing the requested bound.
+- Add wire and live-server regressions for retry-policy roundtrips, full claims,
+  selected values and durable rewind attribution.
+
 ## 0.2.1 - 2026-09-01
 
 - Reject malformed-Unicode durable step names before closure execution or

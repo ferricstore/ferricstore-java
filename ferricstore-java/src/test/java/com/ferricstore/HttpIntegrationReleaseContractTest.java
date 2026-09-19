@@ -10,10 +10,11 @@ import org.junit.jupiter.api.Test;
 final class HttpIntegrationReleaseContractTest {
     private static final Path REPOSITORY = Path.of("..").toAbsolutePath().normalize();
     private static final String RELEASE_IMAGE =
-            "quay.io/ferricstore/ferricstore:0.11.17@sha256:"
-                    + "b1f260a5f01c8976c31daa828e375c8bb2e173f66e8ffc384b548a8b3d223230";
+            "quay.io/ferricstore/ferricstore:0.11.19@sha256:"
+                    + "6275175c71a75f2d2a47c30c47a6561f994d8a5e31570fc8bd11a9f6ebcb6b31";
     private static final String INTEGRATION_TESTS =
-            "-Dtest=FerricStoreIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,"
+            "-Dtest=FerricStoreIntegrationTest,FerricStoreRewindReasonIntegrationTest,"
+                    + "FerricStoreCommandArgumentsIntegrationTest,"
                     + "FerricStoreFlowArgumentsIntegrationTest,"
                     + "FerricStoreConcurrencyIntegrationTest,"
                     + "DurableStepRecoveryIntegrationTest";
@@ -41,6 +42,7 @@ final class HttpIntegrationReleaseContractTest {
                     "ACL authorization probe unexpectedly allowed SET",
                     "unauthenticated HTTP request returned",
                     "FerricStoreIntegrationTest",
+                    "FerricStoreRewindReasonIntegrationTest",
                     "FerricStoreFlowArgumentsIntegrationTest",
                     "FerricStoreConcurrencyIntegrationTest",
                     "DurableStepRecoveryIntegrationTest"
@@ -145,7 +147,7 @@ final class HttpIntegrationReleaseContractTest {
         assertTrue(guard < deploy, "release tag guard must run before Maven Central deploy");
 
         String apiIndex = repositoryFile("docs/api/index.html");
-        assertTrue(apiIndex.contains("0.2.1 API"));
+        assertTrue(apiIndex.contains("0.2.2 API"));
         assertTrue(
                 Files.exists(
                         REPOSITORY.resolve("docs/api/com/ferricstore/DurableStepResult.html")));
