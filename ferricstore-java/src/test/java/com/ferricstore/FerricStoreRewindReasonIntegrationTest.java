@@ -100,9 +100,10 @@ final class FerricStoreRewindReasonIntegrationTest {
         if (event instanceof List<?> list && list.size() > 1) {
             fields = list.get(1);
         }
-        Object value = field(fields, name);
-        if (value == null && fields instanceof Map<?, ?> map && map.get("fields") != null) {
-            value = field(map.get("fields"), name);
+        Map<String, Object> mapped = Resp.map(fields);
+        Object value = mapped.get(name);
+        if (value == null && mapped.get("fields") != null) {
+            value = Resp.map(mapped.get("fields")).get(name);
         }
         return value;
     }
