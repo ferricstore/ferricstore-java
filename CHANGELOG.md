@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.3 - 2026-09-20
+
+- Harden native and HTTP response handling so request deadlines cover blocked
+  writes, response decoding, retries, GOAWAY/stateful sessions, delivery
+  classification, and exception precedence.
+- Validate the release integration gates against FerricStore OSS 0.11.20 using
+  its immutable published image pin.
+
 ## 0.2.2 - 2026-09-19
 
 - Explicitly request full records for record-mode Flow claim and reclaim calls;
