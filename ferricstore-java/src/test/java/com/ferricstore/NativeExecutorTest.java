@@ -990,6 +990,7 @@ final class NativeExecutorTest {
                             NativeTransportOptions.defaults(),
                             System::nanoTime,
                             Duration.ofSeconds(30))) {
+                executor.setSendBufferSizeForTesting(1_024);
                 CompletableFuture<Object> request =
                         executor.executeAsync(
                                 List.of("SET", "blocked", new byte[48 * 1024 * 1024]));
@@ -1018,6 +1019,7 @@ final class NativeExecutorTest {
                             NativeTransportOptions.defaults(),
                             () -> expired.get() ? 31_000_000_000L : 0L,
                             Duration.ofMillis(50))) {
+                executor.setSendBufferSizeForTesting(1_024);
                 CompletableFuture<Object> request =
                         executor.executeAsync(
                                 List.of("SET", "blocked", new byte[48 * 1024 * 1024]));

@@ -220,6 +220,10 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         }
     }
 
+    void setSendBufferSizeForTesting(int bytes) throws IOException {
+        socket.setSendBufferSize(bytes);
+    }
+
     @Override
     public SessionCommandExecutor openSession() {
         try {
