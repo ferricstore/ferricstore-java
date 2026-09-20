@@ -22,6 +22,10 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -29,6 +33,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -42,6 +47,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private static final int MAX_REQUEST_BYTES = 64 * 1024 * 1024;
     private static final int MAX_BUFFERED_EVENTS = 1_024;
     private static final Object CLOSED_EVENT = new Object();
+    private static final String GOAWAY_MESSAGE = "native connection is draining after GOAWAY";
     private static final Set<String> DEDICATED_SESSION_COMMANDS =
             Set.of(
                     "AUTH",
@@ -63,8 +69,15 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private final InputStream input;
     private final OutputStream output;
     private final Object writeLock = new Object();
+    private final ExecutorService writeExecutor;
+    private final ExecutorService reconnectExecutor;
     private final AtomicLong requestIds = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean draining = new AtomicBoolean();
+    private final AtomicBoolean transportRetired = new AtomicBoolean();
+    private final AtomicReference<CompletableFuture<NativeExecutor>> replacement =
+            new AtomicReference<>();
+    private final CountDownLatch dataWriteStarted = new CountDownLatch(1);
     private final ConcurrentHashMap<Long, PendingRequest> pending = new ConcurrentHashMap<>();
     private final NativeResponseAssembler assembler =
             new NativeResponseAssembler(
@@ -73,6 +86,8 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private final NativeEndpoint endpoint;
     private final NativeTransportOptions transportOptions;
     private final Semaphore pendingSlots;
+    private final LongSupplier nanoTime;
+    private final Duration requestTimeout;
     private final boolean dedicatedSession;
     private final Thread readerThread;
     private final BlockingQueue<Object> events = new ArrayBlockingQueue<>(MAX_BUFFERED_EVENTS);
@@ -89,9 +104,30 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             NativeTransportOptions transportOptions,
             boolean dedicatedSession)
             throws IOException {
+        this(endpoint, transportOptions, dedicatedSession, System::nanoTime, REQUEST_TIMEOUT);
+    }
+
+    private NativeExecutor(
+            NativeEndpoint endpoint,
+            NativeTransportOptions transportOptions,
+            boolean dedicatedSession,
+            LongSupplier nanoTime)
+            throws IOException {
+        this(endpoint, transportOptions, dedicatedSession, nanoTime, REQUEST_TIMEOUT);
+    }
+
+    private NativeExecutor(
+            NativeEndpoint endpoint,
+            NativeTransportOptions transportOptions,
+            boolean dedicatedSession,
+            LongSupplier nanoTime,
+            Duration requestTimeout)
+            throws IOException {
         this.endpoint = endpoint;
         this.transportOptions = transportOptions;
         this.pendingSlots = new Semaphore(transportOptions.maxPendingRequests());
+        this.nanoTime = Objects.requireNonNull(nanoTime, "nano time");
+        this.requestTimeout = requirePositiveTimeout(requestTimeout);
         this.dedicatedSession = dedicatedSession;
         Socket connected = connectSocket(endpoint, transportOptions.sslContext());
         this.socket = connected;
@@ -106,7 +142,9 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             }
             throw error;
         }
-        this.readerThread = new Thread(this::readLoop, "ferricstore-native-reader");
+        this.writeExecutor = Executors.newSingleThreadExecutor(NativeExecutor::writerThread);
+        this.reconnectExecutor = Executors.newSingleThreadExecutor(NativeExecutor::reconnectThread);
+        this.readerThread = new Thread(() -> readLoop(this.input), "ferricstore-native-reader");
         this.readerThread.setDaemon(true);
         this.readerThread.start();
     }
@@ -127,10 +165,24 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     /** Connects with caller-provided native transport limits and TLS settings. */
     public static NativeExecutor connectWithOptions(
             String uri, NativeTransportOptions transportOptions) {
+        return connectWithOptions(uri, transportOptions, System::nanoTime);
+    }
+
+    static NativeExecutor connectWithOptions(
+            String uri, NativeTransportOptions transportOptions, LongSupplier nanoTime) {
+        return connectWithOptions(uri, transportOptions, nanoTime, REQUEST_TIMEOUT);
+    }
+
+    static NativeExecutor connectWithOptions(
+            String uri,
+            NativeTransportOptions transportOptions,
+            LongSupplier nanoTime,
+            Duration requestTimeout) {
         Objects.requireNonNull(transportOptions, "native transport options");
         NativeEndpoint endpoint = NativeEndpoint.parse(uri);
         try {
-            NativeExecutor executor = new NativeExecutor(endpoint, transportOptions, false);
+            NativeExecutor executor =
+                    new NativeExecutor(endpoint, transportOptions, false, nanoTime, requestTimeout);
             try {
                 executor.initialize();
                 return executor;
@@ -152,10 +204,31 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         return current;
     }
 
+    void runWithWriteLockForTesting(Runnable action) {
+        Objects.requireNonNull(action, "action");
+        synchronized (writeLock) {
+            action.run();
+        }
+    }
+
+    boolean awaitDataWriteStartedForTesting(Duration timeout) {
+        try {
+            return dataWriteStarted.await(durationToNanos(timeout), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    void setSendBufferSizeForTesting(int bytes) throws IOException {
+        socket.setSendBufferSize(bytes);
+    }
+
     @Override
     public SessionCommandExecutor openSession() {
         try {
-            NativeExecutor session = new NativeExecutor(endpoint, transportOptions, true);
+            NativeExecutor session =
+                    new NativeExecutor(endpoint, transportOptions, true, nanoTime, requestTimeout);
             try {
                 session.initialize();
                 return session;
@@ -308,13 +381,31 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     }
 
     private CompletableFuture<List<Object>> executePipelineBatch(PreparedPipelineBatch batch) {
+        long deadlineNanos = deadlineAfter(requestTimeout);
         return AsyncFutures.map(
-                requestWithRetryAsync(batch.opcode(), batch.laneId(), batch.body(), batch.flags()),
-                value ->
-                        switch (batch.responseType()) {
-                            case PIPELINE -> requirePipelineResults(value, batch.expected());
-                            case FLOW_MANY -> requireFlowManyResults(value, batch.expected());
-                        });
+                requestWithRetryAsync(
+                        batch.opcode(), batch.laneId(), batch.body(), batch.flags(), deadlineNanos),
+                value -> mapPipelineResponse(value, batch, deadlineNanos));
+    }
+
+    private List<Object> mapPipelineResponse(
+            Object value, PreparedPipelineBatch batch, long deadlineNanos) {
+        try {
+            List<Object> results =
+                    switch (batch.responseType()) {
+                        case PIPELINE -> requirePipelineResults(value, batch.expected());
+                        case FLOW_MANY -> requireFlowManyResults(value, batch.expected());
+                    };
+            if (deadlineExpired(deadlineNanos)) {
+                throw requestTimeout();
+            }
+            return results;
+        } catch (RuntimeException error) {
+            if (deadlineExpired(deadlineNanos)) {
+                throw requestTimeout(error);
+            }
+            throw error;
+        }
     }
 
     private PreparedCommand prepareCommand(List<Object> args, boolean allowCustomPayload) {
@@ -437,6 +528,11 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
     private CompletableFuture<Object> requestWithRetryAsync(
             int opcode, long laneId, byte[] body, int flags) {
+        return requestWithRetryAsync(opcode, laneId, body, flags, deadlineAfter(requestTimeout));
+    }
+
+    private CompletableFuture<Object> requestWithRetryAsync(
+            int opcode, long laneId, byte[] body, int flags, long deadlineNanos) {
         try {
             validateRequestBody(body);
         } catch (NativeProtocolException error) {
@@ -445,7 +541,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             return AsyncFutures.failed(notSent("invalid native request body", error));
         }
         CompletableFuture<Object> result = new CompletableFuture<>();
-        requestAttempt(opcode, laneId, body, flags, 0, result);
+        requestAttempt(opcode, laneId, body, flags, 0, deadlineNanos, result);
         return result;
     }
 
@@ -455,12 +551,18 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             byte[] body,
             int flags,
             int retries,
+            long deadlineNanos,
             CompletableFuture<Object> result) {
         if (result.isDone()) {
             return;
         }
+        if (deadlineExpired(deadlineNanos)) {
+            result.completeExceptionally(
+                    retries == 0 ? requestTimeoutBeforeSend() : requestTimeout());
+            return;
+        }
         CompletableFuture<NativeResponseCodec.Response> attempt =
-                requestEncodedAsync(opcode, laneId, body, flags);
+                requestEncodedAsync(opcode, laneId, body, flags, deadlineNanos, retries > 0);
         result.whenComplete(
                 (ignored, failure) -> {
                     if (result.isCancelled()) {
@@ -470,10 +572,24 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         attempt.whenComplete(
                 (response, failure) -> {
                     if (failure != null) {
-                        result.completeExceptionally(AsyncFutures.unwrap(failure));
+                        Throwable unwrapped = AsyncFutures.unwrap(failure);
+                        RuntimeException error =
+                                unwrapped instanceof RuntimeException runtime
+                                        ? runtime
+                                        : new NativeProtocolException(
+                                                "native request failed", unwrapped);
+                        if (isGoAwayFailure(error)
+                                && !dedicatedSession
+                                && !deadlineExpired(deadlineNanos)) {
+                            requestAttempt(
+                                    opcode, laneId, body, flags, retries, deadlineNanos, result);
+                        } else {
+                            result.completeExceptionally(error);
+                        }
                         return;
                     }
-                    completeAttempt(opcode, laneId, body, flags, retries, result, response);
+                    completeAttempt(
+                            opcode, laneId, body, flags, retries, deadlineNanos, result, response);
                 });
     }
 
@@ -483,19 +599,43 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             byte[] body,
             int flags,
             int retries,
+            long deadlineNanos,
             CompletableFuture<Object> result,
             NativeResponseCodec.Response response) {
         try {
-            result.complete(NativeResponseCodec.requireOk(response));
+            Object value = NativeResponseCodec.requireOk(response);
+            if (deadlineExpired(deadlineNanos)) {
+                result.completeExceptionally(requestTimeout());
+                return;
+            }
+            result.complete(value);
         } catch (NativeServerException error) {
+            if (deadlineExpired(deadlineNanos)) {
+                result.completeExceptionally(requestTimeout(error));
+                return;
+            }
             if (!NativeRetryPolicy.shouldRetry(error, retries)) {
                 result.completeExceptionally(error);
                 return;
             }
-            long delayMs = NativeRetryPolicy.retryAfterMs(error);
-            CompletableFuture.delayedExecutor(delayMs, TimeUnit.MILLISECONDS)
+            long remainingNanos = remainingNanos(deadlineNanos);
+            if (remainingNanos <= 0) {
+                result.completeExceptionally(requestTimeout());
+                return;
+            }
+            long retryDelayNanos =
+                    boundedRetryDelayNanos(NativeRetryPolicy.retryAfterMs(error), remainingNanos);
+            CompletableFuture.delayedExecutor(retryDelayNanos, TimeUnit.NANOSECONDS)
                     .execute(
-                            () -> requestAttempt(opcode, laneId, body, flags, retries + 1, result));
+                            () ->
+                                    requestAttempt(
+                                            opcode,
+                                            laneId,
+                                            body,
+                                            flags,
+                                            retries + 1,
+                                            deadlineNanos,
+                                            result));
         } catch (RuntimeException error) {
             result.completeExceptionally(error);
         }
@@ -560,19 +700,32 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         } catch (RuntimeException error) {
             return AsyncFutures.failed(notSent("failed to encode native request", error));
         }
-        return requestEncodedAsync(opcode, laneId, body, 0);
+        return requestEncodedAsync(opcode, laneId, body, 0, deadlineAfter(requestTimeout), false);
     }
 
     private CompletableFuture<NativeResponseCodec.Response> requestEncodedAsync(
-            int opcode, long laneId, byte[] body, int flags) {
+            int opcode,
+            long laneId,
+            byte[] body,
+            int flags,
+            long deadlineNanos,
+            boolean priorAttemptSent) {
         if (closed.get()) {
             return AsyncFutures.failed(
                     NativeProtocolException.notSent("native connection is closed"));
+        }
+        if (draining.get()) {
+            return requestOnReplacementAsync(
+                    opcode, laneId, body, flags, deadlineNanos, priorAttemptSent);
         }
         try {
             validateRequestBody(body);
         } catch (RuntimeException error) {
             return AsyncFutures.failed(notSent("invalid native request body", error));
+        }
+        if (deadlineExpired(deadlineNanos)) {
+            return AsyncFutures.failed(
+                    priorAttemptSent ? requestTimeout() : requestTimeoutBeforeSend());
         }
         if (!pendingSlots.tryAcquire()) {
             return AsyncFutures.failed(
@@ -593,19 +746,32 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         NativeFrame.Identity identity = new NativeFrame.Identity(laneId, opcode, requestId);
         CompletableFuture<NativeResponseCodec.Response> wireResponse = new CompletableFuture<>();
         CompletableFuture<NativeResponseCodec.Response> result = new CompletableFuture<>();
-        PendingRequest request = new PendingRequest(identity, wireResponse);
+        PendingRequest request =
+                new PendingRequest(
+                        identity,
+                        wireResponse,
+                        deadlineNanos,
+                        new AtomicBoolean(),
+                        new AtomicBoolean(),
+                        priorAttemptSent,
+                        socket,
+                        output);
         pending.put(requestId, request);
 
         wireResponse
-                .orTimeout(REQUEST_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                .orTimeout(remainingNanos(deadlineNanos), TimeUnit.NANOSECONDS)
                 .whenComplete(
                         (response, failure) -> {
                             removePending(requestId, request);
-                            if (failure instanceof TimeoutException) {
-                                result.completeExceptionally(
-                                        new NativeProtocolException(
-                                                "native request timed out after sending; outcome is unknown",
-                                                failure));
+                            if (wireResponse.isCancelled()) {
+                                abortIncompleteWrite(request);
+                                return;
+                            }
+                            if (failure instanceof TimeoutException
+                                    || deadlineExpired(deadlineNanos)) {
+                                NativeProtocolException timeout = timeoutFailure(request, failure);
+                                result.completeExceptionally(timeout);
+                                abortIncompleteWrite(request);
                             } else if (failure != null) {
                                 result.completeExceptionally(AsyncFutures.unwrap(failure));
                             } else {
@@ -627,17 +793,195 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         }
 
         try {
+            writeExecutor.execute(
+                    () -> writeRequest(laneId, opcode, requestId, flags, body, request));
+        } catch (RejectedExecutionException error) {
+            if (removePending(requestId, request)) {
+                wireResponse.completeExceptionally(
+                        NativeProtocolException.notSent("native connection is closed", error));
+            }
+        }
+        return result;
+    }
+
+    private CompletableFuture<NativeResponseCodec.Response> requestOnReplacementAsync(
+            int opcode,
+            long laneId,
+            byte[] body,
+            int flags,
+            long deadlineNanos,
+            boolean priorAttemptSent) {
+        CompletableFuture<NativeResponseCodec.Response> result = new CompletableFuture<>();
+        long remaining = remainingNanos(deadlineNanos);
+        if (remaining <= 0) {
+            result.completeExceptionally(
+                    priorAttemptSent ? requestTimeout() : requestTimeoutBeforeSend());
+            return result;
+        }
+        CompletableFuture<NativeExecutor> waitForReplacement = replacementAsync().copy();
+        waitForReplacement.orTimeout(remaining, TimeUnit.NANOSECONDS);
+        AtomicReference<CompletableFuture<NativeResponseCodec.Response>> delegated =
+                new AtomicReference<>();
+        result.whenComplete(
+                (ignored, failure) -> {
+                    if (result.isCancelled()) {
+                        CompletableFuture<NativeResponseCodec.Response> current = delegated.get();
+                        if (current != null) {
+                            current.cancel(false);
+                        }
+                        waitForReplacement.cancel(false);
+                    }
+                });
+        waitForReplacement.whenComplete(
+                (next, failure) -> {
+                    if (failure != null) {
+                        Throwable error = AsyncFutures.unwrap(failure);
+                        if (error instanceof TimeoutException) {
+                            result.completeExceptionally(
+                                    priorAttemptSent
+                                            ? requestTimeout(error)
+                                            : requestTimeoutBeforeSend(error));
+                        } else if (priorAttemptSent) {
+                            result.completeExceptionally(uncertainOutcome(error));
+                        } else {
+                            result.completeExceptionally(
+                                    NativeProtocolException.notSent(
+                                            "failed to reconnect native connection", error));
+                        }
+                        return;
+                    }
+                    CompletableFuture<NativeResponseCodec.Response> current =
+                            next.requestEncodedAsync(
+                                    opcode, laneId, body, flags, deadlineNanos, priorAttemptSent);
+                    delegated.set(current);
+                    if (result.isCancelled()) {
+                        current.cancel(false);
+                        return;
+                    }
+                    current.whenComplete(
+                            (response, currentFailure) -> {
+                                if (currentFailure != null) {
+                                    result.completeExceptionally(
+                                            AsyncFutures.unwrap(currentFailure));
+                                } else {
+                                    result.complete(response);
+                                }
+                            });
+                });
+        return result;
+    }
+
+    private CompletableFuture<NativeExecutor> replacementAsync() {
+        CompletableFuture<NativeExecutor> current = replacement.get();
+        if (current != null) {
+            return current;
+        }
+        CompletableFuture<NativeExecutor> created = new CompletableFuture<>();
+        if (!replacement.compareAndSet(null, created)) {
+            return replacement.get();
+        }
+        try {
+            reconnectExecutor.execute(
+                    () -> {
+                        NativeExecutor next = null;
+                        try {
+                            next =
+                                    new NativeExecutor(
+                                            endpoint,
+                                            transportOptions,
+                                            dedicatedSession,
+                                            nanoTime,
+                                            requestTimeout);
+                            next.initialize();
+                            if (closed.get()) {
+                                next.close();
+                                replacement.compareAndSet(created, null);
+                                created.completeExceptionally(
+                                        NativeProtocolException.notSent(
+                                                "native executor is closed"));
+                            } else {
+                                negotiatedCapabilities.set(next.negotiatedCapabilities.get());
+                                created.complete(next);
+                            }
+                        } catch (IOException | RuntimeException error) {
+                            if (next != null) {
+                                next.close();
+                            }
+                            replacement.compareAndSet(created, null);
+                            created.completeExceptionally(error);
+                        }
+                    });
+        } catch (RejectedExecutionException error) {
+            replacement.compareAndSet(created, null);
+            created.completeExceptionally(error);
+        }
+        return created;
+    }
+
+    private void writeRequest(
+            long laneId,
+            int opcode,
+            long requestId,
+            int flags,
+            byte[] body,
+            PendingRequest request) {
+        try {
             synchronized (writeLock) {
-                NativeFrame.writeRequest(output, laneId, opcode, requestId, flags, body);
-                output.flush();
+                if (!markWriteStarted(request)) {
+                    return;
+                }
+                NativeFrame.writeRequest(request.output(), laneId, opcode, requestId, flags, body);
+                request.output().flush();
+                synchronized (request) {
+                    request.writeComplete().set(true);
+                }
             }
         } catch (IOException error) {
             removePending(requestId, request);
             NativeProtocolException uncertain = uncertainOutcome(error);
-            wireResponse.completeExceptionally(uncertain);
-            terminate(uncertain);
+            request.future().completeExceptionally(uncertain);
+            failTransport(uncertain);
         }
-        return result;
+    }
+
+    private boolean markWriteStarted(PendingRequest request) {
+        RuntimeException failure;
+        synchronized (request) {
+            if (request.future().isDone()) {
+                return false;
+            }
+            if (closed.get()) {
+                failure = NativeProtocolException.notSent("native connection is closed");
+            } else if (draining.get()) {
+                failure = goAwayFailure();
+            } else if (deadlineExpired(request.deadlineNanos())) {
+                failure = requestTimeoutBeforeSend();
+            } else {
+                request.sent().set(true);
+                if (request.identity().opcode() != NativeProtocol.OP_HELLO
+                        && request.identity().opcode() != NativeProtocol.OP_AUTH) {
+                    dataWriteStarted.countDown();
+                }
+                return true;
+            }
+        }
+        if (removePending(request.identity().requestId(), request)) {
+            request.future().completeExceptionally(failure);
+        }
+        retireIfGoAwayDrained();
+        return false;
+    }
+
+    private void abortIncompleteWrite(PendingRequest request) {
+        boolean incomplete;
+        synchronized (request) {
+            incomplete = request.sent().get() && !request.writeComplete().get();
+        }
+        if (incomplete) {
+            failTransport(
+                    new NativeProtocolException(
+                            "native request write was interrupted; connection was closed"));
+        }
     }
 
     private static RuntimeException notSent(String message, RuntimeException failure) {
@@ -653,6 +997,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private boolean removePending(long requestId, PendingRequest request) {
         if (pending.remove(requestId, request)) {
             pendingSlots.release();
+            retireIfGoAwayDrained();
             return true;
         }
         return false;
@@ -662,8 +1007,67 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         PendingRequest request = pending.remove(requestId);
         if (request != null) {
             pendingSlots.release();
+            retireIfGoAwayDrained();
         }
         return request;
+    }
+
+    private void retireIfGoAwayDrained() {
+        if (draining.get() && pending.isEmpty() && transportRetired.compareAndSet(false, true)) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // The old GOAWAY transport is no longer eligible for writes.
+            }
+            writeExecutor.shutdownNow();
+        }
+    }
+
+    private void retireAfterGoAway(RuntimeException failure) {
+        if (transportRetired.compareAndSet(false, true)) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // The original protocol or transport failure remains authoritative.
+            }
+            writeExecutor.shutdownNow();
+        }
+        pending.forEach(
+                (requestId, request) -> {
+                    if (removePending(requestId, request)) {
+                        request.future().completeExceptionally(deliveryFailure(request, failure));
+                    }
+                });
+    }
+
+    private static RuntimeException deliveryFailure(
+            PendingRequest request, RuntimeException failure) {
+        synchronized (request) {
+            if (request.priorAttemptSent() || request.sent().get()) {
+                return failure;
+            }
+        }
+        return NativeProtocolException.notSent(
+                "native connection failed before the request was sent", failure);
+    }
+
+    private static RuntimeException goAwayFailure() {
+        return NativeProtocolException.notSent(GOAWAY_MESSAGE, new GoAwaySignal());
+    }
+
+    private static RuntimeException dedicatedGoAwayFailure() {
+        return new NativeProtocolException(GOAWAY_MESSAGE, new GoAwaySignal());
+    }
+
+    private static boolean isGoAwayFailure(Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof GoAwaySignal) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void validateRequestBody(byte[] body) {
@@ -730,10 +1134,13 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         authenticated.set(!capabilities.authRequired() || endpoint.password() != null);
     }
 
-    private void readLoop() {
+    private void readLoop(InputStream connectionInput) {
         try {
-            while (!closed.get()) {
-                NativeFrame frame = NativeFrame.readResponse(input, maxFrameBytes::get);
+            while (!closed.get() && !transportRetired.get()) {
+                NativeFrame frame = NativeFrame.readResponse(connectionInput, maxFrameBytes::get);
+                if (transportRetired.get()) {
+                    return;
+                }
                 NativeResponseAssembler.Assembled assembled =
                         assembler.add(frame.identity(), frame.flags(), frame.body());
                 if (assembled == null) {
@@ -745,8 +1152,11 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                                     NativeResponseCodec.decode(assembled.body()));
                     if (!events.offer(event)) {
                         NativeProtocolException overflow = eventBufferOverflow();
-                        terminate(overflow);
+                        failTransport(overflow);
                         return;
+                    }
+                    if (assembled.identity().opcode() == NativeProtocol.OP_GOAWAY) {
+                        handleGoAway();
                     }
                     continue;
                 }
@@ -757,10 +1167,11 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                 if (!request.identity().equals(assembled.identity())) {
                     NativeProtocolException mismatch = identityMismatch(request, assembled);
                     request.future().completeExceptionally(mismatch);
-                    terminate(mismatch);
+                    failTransport(mismatch);
                     return;
                 }
                 try {
+                    NativeResponseCodec.Response response;
                     if ((assembled.flags() & NativeProtocol.FLAG_CUSTOM_PAYLOAD) != 0) {
                         String codec =
                                 negotiatedCapabilities
@@ -770,26 +1181,53 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                         if (codec == null) {
                             throw unsupportedCustomPayload(assembled);
                         }
-                        request.future()
-                                .complete(
-                                        NativeCompactResponseCodec.decode(codec, assembled.body()));
+                        response = NativeCompactResponseCodec.decode(codec, assembled.body());
                     } else {
-                        request.future().complete(NativeResponseCodec.decode(assembled.body()));
+                        response = NativeResponseCodec.decode(assembled.body());
+                    }
+                    if (deadlineExpired(request.deadlineNanos())) {
+                        request.future().completeExceptionally(requestTimeout());
+                    } else {
+                        request.future().complete(response);
                     }
                 } catch (RuntimeException error) {
-                    request.future().completeExceptionally(error);
-                    terminate(error);
+                    RuntimeException failure =
+                            deadlineExpired(request.deadlineNanos())
+                                    ? requestTimeout(error)
+                                    : error;
+                    request.future().completeExceptionally(failure);
+                    failTransport(failure);
                     return;
                 }
             }
         } catch (IOException error) {
             if (!closed.get()) {
-                terminate(uncertainOutcome(error));
+                failTransport(uncertainOutcome(error));
             }
         } catch (RuntimeException error) {
             if (!closed.get()) {
-                terminate(error);
+                failTransport(error);
             }
+        }
+    }
+
+    private void handleGoAway() {
+        if (draining.compareAndSet(false, true)) {
+            synchronized (writeLock) {
+                if (dedicatedSession) {
+                    terminate(dedicatedGoAwayFailure());
+                } else {
+                    retireIfGoAwayDrained();
+                }
+            }
+        }
+    }
+
+    private void failTransport(RuntimeException failure) {
+        if (draining.get()) {
+            retireAfterGoAway(failure);
+        } else {
+            terminate(failure);
         }
     }
 
@@ -816,12 +1254,23 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             } catch (IOException ignored) {
                 // The original protocol or transport failure remains authoritative.
             }
+            writeExecutor.shutdownNow();
+            reconnectExecutor.shutdownNow();
+            CompletableFuture<NativeExecutor> pendingReplacement = replacement.get();
+            if (pendingReplacement != null) {
+                pendingReplacement.whenComplete(
+                        (next, replacementFailure) -> {
+                            if (next != null) {
+                                next.close();
+                            }
+                        });
+            }
         }
         assembler.clear();
         pending.forEach(
                 (requestId, request) -> {
                     if (removePending(requestId, request)) {
-                        request.future().completeExceptionally(failure);
+                        request.future().completeExceptionally(deliveryFailure(request, failure));
                     }
                 });
         eventFailure.compareAndSet(null, failure);
@@ -913,9 +1362,74 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         }
     }
 
+    private static Duration requirePositiveTimeout(Duration timeout) {
+        Objects.requireNonNull(timeout, "request timeout");
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("request timeout must be positive");
+        }
+        return timeout;
+    }
+
+    static long boundedRetryDelayNanos(long delayMs, long remainingNanos) {
+        return Math.min(TimeUnit.MILLISECONDS.toNanos(delayMs), remainingNanos);
+    }
+
+    private long deadlineAfter(Duration timeout) {
+        long timeoutNanos = durationToNanos(timeout);
+        long now = nanoTime.getAsLong();
+        return now + timeoutNanos;
+    }
+
+    private long remainingNanos(long deadlineNanos) {
+        long remaining = deadlineNanos - nanoTime.getAsLong();
+        return remaining > 0 ? remaining : 0;
+    }
+
+    private boolean deadlineExpired(long deadlineNanos) {
+        return remainingNanos(deadlineNanos) <= 0;
+    }
+
+    private static NativeProtocolException requestTimeout() {
+        return requestTimeout(new TimeoutException("native request deadline exceeded"));
+    }
+
+    private static NativeProtocolException requestTimeoutBeforeSend() {
+        return requestTimeoutBeforeSend(
+                new TimeoutException("native request deadline exceeded before sending"));
+    }
+
+    private static NativeProtocolException requestTimeoutBeforeSend(Throwable cause) {
+        return NativeProtocolException.notSent("native request timed out before sending", cause);
+    }
+
+    private static NativeProtocolException requestTimeout(Throwable cause) {
+        return new NativeProtocolException(
+                "native request timed out after sending; outcome is unknown", cause);
+    }
+
+    private static NativeProtocolException timeoutFailure(PendingRequest request, Throwable cause) {
+        synchronized (request) {
+            return request.priorAttemptSent() || request.sent().get()
+                    ? requestTimeout(cause)
+                    : requestTimeoutBeforeSend(cause);
+        }
+    }
+
     private static NativeProtocolException uncertainOutcome(Throwable cause) {
         return new NativeProtocolException(
                 "native connection failed after a request was sent; outcome is unknown", cause);
+    }
+
+    private static Thread writerThread(Runnable runnable) {
+        Thread thread = new Thread(runnable, "ferricstore-native-writer");
+        thread.setDaemon(true);
+        return thread;
+    }
+
+    private static Thread reconnectThread(Runnable runnable) {
+        Thread thread = new Thread(runnable, "ferricstore-native-reconnect");
+        thread.setDaemon(true);
+        return thread;
     }
 
     private enum PipelineResponseType {
@@ -979,5 +1493,15 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
     private record PendingRequest(
             NativeFrame.Identity identity,
-            CompletableFuture<NativeResponseCodec.Response> future) {}
+            CompletableFuture<NativeResponseCodec.Response> future,
+            long deadlineNanos,
+            AtomicBoolean sent,
+            AtomicBoolean writeComplete,
+            boolean priorAttemptSent,
+            Socket connection,
+            OutputStream output) {}
+
+    private static final class GoAwaySignal extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+    }
 }

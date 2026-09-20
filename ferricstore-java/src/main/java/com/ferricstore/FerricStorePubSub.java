@@ -49,11 +49,22 @@ public final class FerricStorePubSub implements AutoCloseable {
         long deadline = System.nanoTime() + timeout.toNanos();
         Duration remaining = timeout;
         while (!remaining.isNegative()) {
-            Object event = executor.pollEvent(remaining);
+            Object event;
+            try {
+                event = executor.pollEvent(remaining);
+            } catch (RuntimeException error) {
+                closeAfterFailure(error);
+                throw error;
+            }
             if (event == null) {
                 return null;
             }
-            decodeEvent(event);
+            try {
+                decodeEvent(event);
+            } catch (RuntimeException error) {
+                closeAfterFailure(error);
+                throw error;
+            }
             PubSubMessage message = pending.pollFirst();
             if (message != null) {
                 return message;
@@ -113,7 +124,24 @@ public final class FerricStorePubSub implements AutoCloseable {
             FlowValidation.requireText(value, command + " value");
             args.add(value);
         }
-        return executor.execute(args);
+        try {
+            return executor.execute(args);
+        } catch (RuntimeException error) {
+            closeAfterFailure(error);
+            throw error;
+        }
+    }
+
+    private void closeAfterFailure(RuntimeException failure) {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        try {
+            executor.close();
+        } catch (RuntimeException closeError) {
+            failure.addSuppressed(closeError);
+        }
     }
 
     private void decodeEvent(Object value) {

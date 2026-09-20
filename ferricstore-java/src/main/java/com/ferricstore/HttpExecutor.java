@@ -31,6 +31,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import javax.net.ssl.SSLContext;
 
 /** Ordered, binary-safe HTTP/HTTPS executor for FerricStore's stateless command endpoint. */
@@ -92,10 +93,15 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private final HttpClient.Redirect redirects;
     private final boolean compact;
     private final AsyncPermitPool requestSlots;
+    private final LongSupplier nanoTime;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicReference<HttpClient.Version> observedVersion = new AtomicReference<>();
 
     private HttpExecutor(String endpoint, HttpTransportOptions options) {
+        this(endpoint, options, System::nanoTime);
+    }
+
+    HttpExecutor(String endpoint, HttpTransportOptions options, LongSupplier nanoTime) {
         commandEndpoint = commandEndpoint(endpoint, options);
         client = new AtomicReference<>(createClient(options));
         headers = authenticationHeaders(options);
@@ -107,6 +113,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         compact = options.compact();
         requestSlots =
                 new AsyncPermitPool(options.maxConcurrentRequests(), options.maxPendingRequests());
+        this.nanoTime = Objects.requireNonNull(nanoTime, "nano time");
     }
 
     public static HttpExecutor connect(String endpoint) {
@@ -174,15 +181,33 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                             : flowCreateBatch == null
                                     ? encodeRequest(commands)
                                     : encodeFlowCreateManyRequest(flowCreateBatch);
-            return AsyncFutures.map(
-                    sendAsync(requestBody, effectiveRequestTimeout(commands)),
+            Duration effectiveTimeout = effectiveRequestTimeout(commands);
+            Long deadlineNanos = deadlineAfter(effectiveTimeout);
+            return AsyncFutures.compose(
+                    sendAsync(requestBody, deadlineNanos),
                     response ->
-                            flowCreateBatch == null
-                                    ? decodePipelineResponse(commands.size(), response)
-                                    : decodeFlowCreateManyResponse(
-                                            flowCreateBatch.count(), response));
+                            mapPipelineResponseAsync(
+                                    commands.size(), flowCreateBatch, response, deadlineNanos));
         } catch (RuntimeException failure) {
             return AsyncFutures.failed(localFailure(failure));
+        }
+    }
+
+    private CompletableFuture<List<Object>> mapPipelineResponseAsync(
+            int commandCount,
+            FlowCreatePipeline.Batch flowCreateBatch,
+            Map<String, Object> response,
+            Long deadlineNanos) {
+        try {
+            List<Object> decoded =
+                    flowCreateBatch == null
+                            ? decodePipelineResponse(commandCount, response)
+                            : decodeFlowCreateManyResponse(flowCreateBatch.count(), response);
+            rejectIfDeadlineExceeded(deadlineNanos);
+            return CompletableFuture.completedFuture(decoded);
+        } catch (RuntimeException error) {
+            RuntimeException timeout = timeoutIfExpired(deadlineNanos, error);
+            return AsyncFutures.failed(timeout == null ? error : timeout);
         }
     }
 
@@ -256,12 +281,10 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         requestSlots.close();
     }
 
-    private CompletableFuture<Map<String, Object>> sendAsync(
-            EncodedBody body, Duration effectiveTimeout) {
-        Long timeoutNanos = effectiveTimeout == null ? null : durationToNanos(effectiveTimeout);
-        long started = System.nanoTime();
+    private CompletableFuture<Map<String, Object>> sendAsync(EncodedBody body, Long deadlineNanos) {
         CompletableFuture<Map<String, Object>> result = new CompletableFuture<>();
-        CompletableFuture<AsyncPermitPool.Permit> capacity = requestSlots.acquire(timeoutNanos);
+        CompletableFuture<AsyncPermitPool.Permit> capacity =
+                requestSlots.acquire(remainingNanos(deadlineNanos));
         result.whenComplete(
                 (ignored, failure) -> {
                     if (result.isCancelled()) {
@@ -278,18 +301,17 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                         permit.close();
                         return;
                     }
-                    sendWithPermit(body, started, timeoutNanos, permit, result);
+                    sendWithPermit(body, deadlineNanos, permit, result);
                 });
         return result;
     }
 
     private void sendWithPermit(
             EncodedBody body,
-            long started,
-            Long timeoutNanos,
+            Long deadlineNanos,
             AsyncPermitPool.Permit permit,
             CompletableFuture<Map<String, Object>> result) {
-        Long remaining = remainingNanos(started, timeoutNanos);
+        Long remaining = remainingNanos(deadlineNanos);
         if (remaining != null && remaining <= 0) {
             permit.close();
             result.completeExceptionally(
@@ -301,7 +323,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             return;
         }
         CompletableFuture<HttpResponse<byte[]>> responseFuture =
-                sendFollowingRedirectsAsync(body, started, timeoutNanos, remaining);
+                sendFollowingRedirectsAsync(body, deadlineNanos, remaining);
         result.whenComplete(
                 (ignored, failure) -> {
                     if (result.isCancelled()) {
@@ -313,7 +335,9 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                 (response, failure) -> {
                     permit.close();
                     if (failure != null) {
-                        result.completeExceptionally(sendFailure(failure));
+                        RuntimeException timeout = timeoutIfExpired(deadlineNanos, failure);
+                        result.completeExceptionally(
+                                timeout == null ? sendFailure(failure) : timeout);
                         return;
                     }
                     try {
@@ -326,28 +350,29 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                                                 response.body(),
                                                 response.statusCode(),
                                                 messagePack);
+                        rejectIfDeadlineExceeded(deadlineNanos);
                         if (response.statusCode() != 200) {
                             throw topLevelError(response, payload);
                         }
                         result.complete(payload);
                     } catch (RuntimeException error) {
-                        result.completeExceptionally(error);
+                        RuntimeException timeout = timeoutIfExpired(deadlineNanos, error);
+                        result.completeExceptionally(timeout == null ? error : timeout);
                     }
                 });
     }
 
     private CompletableFuture<HttpResponse<byte[]>> sendFollowingRedirectsAsync(
-            EncodedBody initialBody, long started, Long timeoutNanos, Long initialRemaining) {
+            EncodedBody initialBody, Long deadlineNanos, Long initialRemaining) {
         return sendRedirectAsync(
-                commandEndpoint, "POST", initialBody, started, timeoutNanos, initialRemaining, 0);
+                commandEndpoint, "POST", initialBody, deadlineNanos, initialRemaining, 0);
     }
 
     private CompletableFuture<HttpResponse<byte[]>> sendRedirectAsync(
             URI current,
             String method,
             EncodedBody body,
-            long started,
-            Long timeoutNanos,
+            Long deadlineNanos,
             Long remaining,
             int redirectCount) {
         try {
@@ -371,13 +396,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                     exchange,
                     response ->
                             followRedirectIfNeeded(
-                                    response,
-                                    current,
-                                    method,
-                                    body,
-                                    started,
-                                    timeoutNanos,
-                                    redirectCount));
+                                    response, current, method, body, deadlineNanos, redirectCount));
         } catch (RuntimeException error) {
             return AsyncFutures.failed(error);
         }
@@ -388,8 +407,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             URI current,
             String method,
             EncodedBody body,
-            long started,
-            Long timeoutNanos,
+            Long deadlineNanos,
             int redirectCount) {
         try {
             String location = response.headers().firstValue("Location").orElse(null);
@@ -411,19 +429,13 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                 nextMethod = "GET";
                 nextBody = EMPTY_BODY;
             }
-            Long remaining = remainingNanos(started, timeoutNanos);
+            Long remaining = remainingNanos(deadlineNanos);
             if (remaining != null && remaining <= 0) {
                 return AsyncFutures.failed(
                         new HttpTimeoutException("FerricStore HTTP redirect deadline exceeded"));
             }
             return sendRedirectAsync(
-                    redirect,
-                    nextMethod,
-                    nextBody,
-                    started,
-                    timeoutNanos,
-                    remaining,
-                    redirectCount + 1);
+                    redirect, nextMethod, nextBody, deadlineNanos, remaining, redirectCount + 1);
         } catch (IOException | RuntimeException error) {
             return AsyncFutures.failed(error);
         }
@@ -1196,12 +1208,40 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         }
     }
 
-    private static Long remainingNanos(long started, Long timeoutNanos) {
-        if (timeoutNanos == null) {
+    private Long deadlineAfter(Duration timeout) {
+        if (timeout == null) {
             return null;
         }
-        long elapsed = System.nanoTime() - started;
-        return elapsed >= timeoutNanos ? 0L : timeoutNanos - elapsed;
+        long timeoutNanos = durationToNanos(timeout);
+        long now = nanoTime.getAsLong();
+        return now + timeoutNanos;
+    }
+
+    private Long remainingNanos(Long deadlineNanos) {
+        if (deadlineNanos == null) {
+            return null;
+        }
+        long remaining = deadlineNanos - nanoTime.getAsLong();
+        return remaining > 0 ? remaining : 0L;
+    }
+
+    private void rejectIfDeadlineExceeded(Long deadlineNanos) {
+        if (deadlineNanos != null && remainingNanos(deadlineNanos) <= 0) {
+            throw transportFailure(
+                    "FerricStore HTTP request timed out; outcome is unknown",
+                    "transport_timeout",
+                    new HttpTimeoutException("FerricStore HTTP response deadline exceeded"));
+        }
+    }
+
+    private RuntimeException timeoutIfExpired(Long deadlineNanos, Throwable cause) {
+        if (deadlineNanos == null || remainingNanos(deadlineNanos) > 0) {
+            return null;
+        }
+        return transportFailure(
+                "FerricStore HTTP request timed out; outcome is unknown",
+                "transport_timeout",
+                cause);
     }
 
     private static boolean causedBy(Throwable error, Class<? extends Throwable> type) {

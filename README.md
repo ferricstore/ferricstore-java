@@ -23,7 +23,7 @@ Artifacts are published under the FerricStore GitHub organization namespace. Jav
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
-  <version>0.2.2</version>
+  <version>0.2.3</version>
 </dependency>
 ```
 
@@ -33,7 +33,7 @@ Spring Boot:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
-  <version>0.2.2</version>
+  <version>0.2.3</version>
 </dependency>
 ```
 
@@ -43,7 +43,7 @@ Optional Spring Statemachine adapter:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
-  <version>0.2.2</version>
+  <version>0.2.3</version>
 </dependency>
 ```
 
@@ -106,7 +106,7 @@ Run the complete HTTP-compatible integration surface through a real TLS
 listener with ACL authentication using:
 
 ```bash
-FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.19@sha256:6275175c71a75f2d2a47c30c47a6561f994d8a5e31570fc8bd11a9f6ebcb6b31 \
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.20@sha256:aeec52c27c3afb6e462f659c16b75898d9e9fd6833c8830194f7252ef4916e4f \
   scripts/run-http-integration.sh
 ```
 
