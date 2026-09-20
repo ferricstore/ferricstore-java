@@ -17,6 +17,7 @@ import java.net.URLEncoder;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,6 +29,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 final class NativeExecutorTest {
@@ -664,6 +669,614 @@ final class NativeExecutorTest {
     }
 
     @Test
+    void cancellationWhileWaitingForNativeWriteLockDoesNotSendAFrame() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    socket.setSoTimeout(2_000);
+                                    assertThrows(
+                                            SocketTimeoutException.class,
+                                            () -> readRequest(socket));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                executor.runWithWriteLockForTesting(
+                        () -> {
+                            try {
+                                CompletableFuture<Object> request =
+                                        caller.submit(() -> executor.executeAsync(List.of("PING")))
+                                                .get(1, TimeUnit.SECONDS);
+                                assertTrue(request.cancel(false));
+                            } catch (InterruptedException error) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(error);
+                            } catch (ExecutionException | TimeoutException error) {
+                                throw new AssertionError(error);
+                            }
+                        });
+                served.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            caller.shutdownNow();
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void deadlineWhileWaitingForNativeWriteLockIsNotSent() throws Exception {
+        AtomicBoolean expired = new AtomicBoolean();
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    socket.setSoTimeout(2_000);
+                                    assertThrows(
+                                            SocketTimeoutException.class,
+                                            () -> readRequest(socket));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.defaults(),
+                            () -> expired.get() ? 31_000_000_000L : 0L)) {
+                AtomicReference<CompletableFuture<Object>> request = new AtomicReference<>();
+                executor.runWithWriteLockForTesting(
+                        () -> {
+                            try {
+                                request.set(
+                                        caller.submit(() -> executor.executeAsync(List.of("PING")))
+                                                .get(1, TimeUnit.SECONDS));
+                                expired.set(true);
+                                assertFalse(request.get().isDone());
+                            } catch (InterruptedException error) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(error);
+                            } catch (ExecutionException | TimeoutException error) {
+                                throw new AssertionError(error);
+                            }
+                        });
+
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class,
+                                () -> request.get().get(1, TimeUnit.SECONDS));
+                NativeProtocolException timeout =
+                        assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertEquals(RequestDelivery.NOT_SENT, timeout.delivery());
+                served.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            caller.shutdownNow();
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void rejectsNativeResponsesAcceptedAfterTheAbsoluteDeadline() throws Exception {
+        AtomicBoolean expired = new AtomicBoolean();
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+
+                                    NativeFrame late = readRequest(socket);
+                                    expired.set(true);
+                                    writeResponse(
+                                            socket,
+                                            late.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            "late");
+
+                                    NativeFrame next = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            next.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            "still-usable");
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.builder().maxPendingRequests(1).build(),
+                            () -> expired.get() ? 31_000_000_000L : 0L)) {
+                CompletableFuture<Object> late = executor.executeAsync(List.of("PING"));
+                ExecutionException failure =
+                        assertThrows(ExecutionException.class, () -> late.get(1, TimeUnit.SECONDS));
+                NativeProtocolException timeout =
+                        assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertTrue(timeout.getMessage().contains("timed out"));
+
+                assertEquals(
+                        "still-usable",
+                        text(executor.executeAsync(List.of("PING")).get(1, TimeUnit.SECONDS)));
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void rejectsLateNativeDecodeFailuresWithTimeoutPrecedence() throws Exception {
+        AtomicBoolean expired = new AtomicBoolean();
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    NativeFrame command = readRequest(socket);
+                                    expired.set(true);
+                                    writeRawResponse(
+                                            socket,
+                                            command.identity(),
+                                            0,
+                                            new byte[] {0, 0, (byte) 0xff});
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.defaults(),
+                            () -> expired.get() ? 31_000_000_000L : 0L)) {
+                NativeProtocolException timeout =
+                        assertThrows(
+                                NativeProtocolException.class,
+                                () -> executor.execute(List.of("PING")));
+                assertTrue(timeout.getMessage().contains("timed out"));
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void rejectsLateNativeServerErrorsWithTimeoutPrecedence() throws Exception {
+        AtomicInteger clockReads = new AtomicInteger();
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    NativeFrame command = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            command.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_ERROR,
+                                            Map.of("message", "late server error"));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.defaults(),
+                            () -> clockReads.getAndIncrement() >= 13 ? 31_000_000_000L : 0L)) {
+                NativeProtocolException timeout =
+                        assertThrows(
+                                NativeProtocolException.class,
+                                () -> executor.execute(List.of("PING")));
+                assertTrue(timeout.getMessage().contains("timed out"));
+                assertInstanceOf(NativeServerException.class, timeout.getCause());
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void rejectsLateNativePipelineValidationWithTimeoutPrecedence() throws Exception {
+        AtomicInteger clockReads = new AtomicInteger();
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    NativeFrame pipeline = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            pipeline.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            List.of(List.of("ok")));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.defaults(),
+                            () -> clockReads.getAndIncrement() >= 14 ? 31_000_000_000L : 0L)) {
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class,
+                                () ->
+                                        executor.pipelineAsync(
+                                                        List.of(
+                                                                List.of("ECHO", "one"),
+                                                                List.of("ECHO", "two")))
+                                                .get(1, TimeUnit.SECONDS));
+                NativeProtocolException timeout =
+                        assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertTrue(timeout.getMessage().contains("timed out"));
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellationClosesNativeTransportWhenTheWriteIsBlocked() throws Exception {
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served = serveBlockedNativeWrite(server, releaseRead, tasks);
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.defaults(),
+                            System::nanoTime,
+                            Duration.ofSeconds(30))) {
+                CompletableFuture<Object> request =
+                        executor.executeAsync(
+                                List.of("SET", "blocked", new byte[48 * 1024 * 1024]));
+                assertTrue(executor.awaitDataWriteStartedForTesting(Duration.ofSeconds(5)));
+                assertTrue(request.cancel(false));
+                releaseRead.countDown();
+                served.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            releaseRead.countDown();
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void deadlineClosesNativeTransportWhenTheWriteIsBlocked() throws Exception {
+        AtomicBoolean expired = new AtomicBoolean();
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served = serveBlockedNativeWrite(server, releaseRead, tasks);
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.defaults(),
+                            () -> expired.get() ? 31_000_000_000L : 0L,
+                            Duration.ofMillis(50))) {
+                CompletableFuture<Object> request =
+                        executor.executeAsync(
+                                List.of("SET", "blocked", new byte[48 * 1024 * 1024]));
+                assertTrue(executor.awaitDataWriteStartedForTesting(Duration.ofSeconds(5)));
+                expired.set(true);
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> request.get(5, TimeUnit.SECONDS));
+                NativeProtocolException timeout =
+                        assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertEquals(RequestDelivery.UNKNOWN, timeout.delivery());
+                releaseRead.countDown();
+                served.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            releaseRead.countDown();
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void classifiesSentAndQueuedRequestsSeparatelyWhenNativeTransportTerminates() throws Exception {
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served = serveBlockedNativeWrite(server, releaseRead, tasks);
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.defaults(),
+                            System::nanoTime,
+                            Duration.ofSeconds(30))) {
+                CompletableFuture<Object> sent =
+                        executor.executeAsync(
+                                List.of("SET", "blocked", new byte[48 * 1024 * 1024]));
+                assertTrue(executor.awaitDataWriteStartedForTesting(Duration.ofSeconds(5)));
+                CompletableFuture<Object> queued = executor.executeAsync(List.of("PING"));
+                closeExecutor(executor);
+
+                ExecutionException sentFailure =
+                        assertThrows(ExecutionException.class, () -> sent.get(5, TimeUnit.SECONDS));
+                NativeProtocolException sentError =
+                        assertInstanceOf(NativeProtocolException.class, sentFailure.getCause());
+                assertEquals(RequestDelivery.UNKNOWN, sentError.delivery());
+
+                ExecutionException queuedFailure =
+                        assertThrows(
+                                ExecutionException.class, () -> queued.get(5, TimeUnit.SECONDS));
+                NativeProtocolException queuedError =
+                        assertInstanceOf(NativeProtocolException.class, queuedFailure.getCause());
+                assertEquals(RequestDelivery.NOT_SENT, queuedError.delivery());
+
+                releaseRead.countDown();
+                served.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            releaseRead.countDown();
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void drainsNativeGoAwayResponsesAndReconnectsSubsequentRequests() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket first = server.accept()) {
+                                    NativeFrame hello = readRequest(first);
+                                    writeResponse(
+                                            first,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+
+                                    NativeFrame request = readRequest(first);
+                                    writeResponse(
+                                            first,
+                                            new NativeFrame.Identity(
+                                                    0, NativeProtocol.OP_GOAWAY, 0),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            Map.of(
+                                                    "reason",
+                                                    "maintenance",
+                                                    "grace_ms",
+                                                    100L,
+                                                    "reconnect",
+                                                    true));
+                                    writeResponse(
+                                            first,
+                                            request.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            "before-goaway");
+                                    first.setSoTimeout(2_000);
+                                    assertEquals(-1, first.getInputStream().read());
+                                }
+
+                                try (Socket second = server.accept()) {
+                                    NativeFrame hello = readRequest(second);
+                                    writeResponse(
+                                            second,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    NativeFrame request = readRequest(second);
+                                    writeResponse(
+                                            second,
+                                            request.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            "after-goaway");
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                assertEquals(
+                        "before-goaway", text(executor.execute(List.of("PING", "before-goaway"))));
+                Map<String, Object> event = objectMap(executor.pollEvent(Duration.ofSeconds(1)));
+                assertEquals("maintenance", text(event.get("reason")));
+                assertEquals(
+                        "after-goaway", text(executor.execute(List.of("PING", "after-goaway"))));
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void failsTransactionOnGoAwayWithoutOpeningAReplacementSession() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket base = server.accept()) {
+                                    NativeFrame baseHello = readRequest(base);
+                                    writeResponse(
+                                            base,
+                                            baseHello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    try (Socket session = server.accept()) {
+                                        NativeFrame sessionHello = readRequest(session);
+                                        writeResponse(
+                                                session,
+                                                sessionHello.identity(),
+                                                0,
+                                                NativeProtocol.STATUS_OK,
+                                                hello(false, 4096));
+
+                                        NativeFrame watch = readRequest(session);
+                                        assertEquals(
+                                                NativeProtocol.OP_COMMAND_EXEC,
+                                                watch.identity().opcode());
+                                        assertEquals(
+                                                "WATCH", text(map(watch.body()).get("command")));
+                                        writeResponse(
+                                                session,
+                                                watch.identity(),
+                                                0,
+                                                NativeProtocol.STATUS_OK,
+                                                "OK");
+
+                                        NativeFrame multi = readRequest(session);
+                                        assertEquals(
+                                                NativeProtocol.OP_COMMAND_EXEC,
+                                                multi.identity().opcode());
+                                        writeGoAway(session);
+                                        session.setSoTimeout(2_000);
+                                        assertEquals(-1, session.getInputStream().read());
+                                    }
+                                    server.setSoTimeout(500);
+                                    assertThrows(SocketTimeoutException.class, server::accept);
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+                NativeProtocolException failure =
+                        assertThrows(
+                                NativeProtocolException.class,
+                                () -> client.transaction(List.of("watched")));
+                assertEquals(RequestDelivery.UNKNOWN, failure.delivery());
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void failsPubSubOnGoAwayWithoutOpeningAReplacementSession() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket base = server.accept()) {
+                                    NativeFrame baseHello = readRequest(base);
+                                    writeResponse(
+                                            base,
+                                            baseHello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    try (Socket session = server.accept()) {
+                                        NativeFrame sessionHello = readRequest(session);
+                                        writeResponse(
+                                                session,
+                                                sessionHello.identity(),
+                                                0,
+                                                NativeProtocol.STATUS_OK,
+                                                hello(false, 4096));
+                                        NativeFrame subscribe = readRequest(session);
+                                        assertEquals(
+                                                NativeProtocol.OP_COMMAND_EXEC,
+                                                subscribe.identity().opcode());
+                                        assertEquals(
+                                                "SUBSCRIBE",
+                                                text(map(subscribe.body()).get("command")));
+                                        writeGoAway(session);
+                                        session.setSoTimeout(2_000);
+                                        assertEquals(-1, session.getInputStream().read());
+                                    }
+                                    server.setSoTimeout(500);
+                                    assertThrows(SocketTimeoutException.class, server::accept);
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                FerricStoreClient client = FerricStoreClient.fromExecutor(executor);
+                FerricStorePubSub pubsub = client.pubsubSession();
+                NativeProtocolException failure =
+                        assertThrows(
+                                NativeProtocolException.class, () -> pubsub.subscribe("events"));
+                assertEquals(RequestDelivery.UNKNOWN, failure.delivery());
+                assertThrows(IllegalStateException.class, () -> pubsub.subscribe("other"));
+            }
+            served.get(5, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
     void negotiatesAuthenticatesBeforeDataAndReassemblesChunkedResponses() throws Exception {
         ExecutorService tasks = Executors.newSingleThreadExecutor();
         try (ServerSocket server = new ServerSocket(0)) {
@@ -1234,6 +1847,14 @@ final class NativeExecutorTest {
         assertTrue(error.getMessage().contains("ferric:// or ferrics://"));
     }
 
+    @Test
+    void boundsNativeRetryDelayByTheRemainingAbsoluteDeadline() {
+        assertEquals(5_000_000L, NativeExecutor.boundedRetryDelayNanos(60_000L, 5_000_000L));
+        assertEquals(
+                TimeUnit.MILLISECONDS.toNanos(25),
+                NativeExecutor.boundedRetryDelayNanos(25L, TimeUnit.SECONDS.toNanos(1)));
+    }
+
     private static Map<String, Object> hello(boolean authRequired, int maxResponseBytes) {
         Map<String, Object> codecs = new LinkedHashMap<>();
         codecs.put("flow_query_result_v1", List.of(0x0100L));
@@ -1316,6 +1937,15 @@ final class NativeExecutorTest {
             Socket socket, NativeFrame.Identity identity, int flags, int status, Object value)
             throws IOException {
         writeRawResponse(socket, identity, flags, responseBody(status, value));
+    }
+
+    private static void writeGoAway(Socket socket) throws IOException {
+        writeResponse(
+                socket,
+                new NativeFrame.Identity(0, NativeProtocol.OP_GOAWAY, 0),
+                0,
+                NativeProtocol.STATUS_OK,
+                Map.of("reason", "maintenance", "grace_ms", 0L));
     }
 
     private static void writeRawResponse(
@@ -1427,5 +2057,33 @@ final class NativeExecutorTest {
     private static String text(Object value) {
         assertInstanceOf(byte[].class, value);
         return new String((byte[]) value, StandardCharsets.UTF_8);
+    }
+
+    private static Future<Void> serveBlockedNativeWrite(
+            ServerSocket server, CountDownLatch releaseRead, ExecutorService tasks) {
+        return tasks.submit(
+                () -> {
+                    try (Socket socket = server.accept()) {
+                        socket.setReceiveBufferSize(1_024);
+                        NativeFrame hello = readRequest(socket);
+                        writeResponse(
+                                socket,
+                                hello.identity(),
+                                0,
+                                NativeProtocol.STATUS_OK,
+                                hello(false, 4096));
+                        assertTrue(releaseRead.await(5, TimeUnit.SECONDS));
+                        byte[] buffer = new byte[8_192];
+                        int read;
+                        while ((read = socket.getInputStream().read(buffer)) != -1) {
+                            assertTrue(read > 0);
+                        }
+                    }
+                    return null;
+                });
+    }
+
+    private static void closeExecutor(NativeExecutor executor) {
+        executor.close();
     }
 }

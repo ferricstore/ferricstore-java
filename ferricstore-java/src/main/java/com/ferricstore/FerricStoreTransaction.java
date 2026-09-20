@@ -43,11 +43,21 @@ public final class FerricStoreTransaction implements AutoCloseable {
     /** Queues one raw command on this transaction's isolated native connection. */
     public FerricStoreTransaction command(List<Object> args) {
         requireActive();
-        Object response = executor.execute(args);
-        if (!"QUEUED".equalsIgnoreCase(Resp.string(response))) {
-            throw new FerricStoreException("transaction command response must be QUEUED");
+        try {
+            Object response = executor.execute(args);
+            if (!"QUEUED".equalsIgnoreCase(Resp.string(response))) {
+                throw new FerricStoreException("transaction command response must be QUEUED");
+            }
+            return this;
+        } catch (RuntimeException error) {
+            active = false;
+            try {
+                executor.close();
+            } catch (RuntimeException closeError) {
+                error.addSuppressed(closeError);
+            }
+            throw error;
         }
-        return this;
     }
 
     /** Executes queued commands and permanently closes the transaction connection. */

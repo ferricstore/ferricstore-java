@@ -32,6 +32,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -965,6 +966,203 @@ final class HttpExecutorTest {
                     assertThrows(
                             HttpTransportException.class, () -> executor.execute(List.of("PING")));
             assertEquals("response_too_large", tooLarge.errorCode());
+        }
+    }
+
+    @Test
+    void rejectsHttpResponsesAcceptedAfterTheAbsoluteDeadline() throws IOException {
+        AtomicBoolean expired = new AtomicBoolean();
+        AtomicInteger requests = new AtomicInteger();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    readJson(exchange);
+                                    boolean first = requests.getAndIncrement() == 0;
+                                    expired.set(true);
+                                    replyOk(exchange, first ? "late" : "still-usable");
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.builder()
+                                        .requestTimeout(Duration.ofSeconds(30))
+                                        .maxConcurrentRequests(1)
+                                        .build(),
+                                () -> expired.get() ? 31_000_000_000L : 0L)) {
+            HttpTransportException timeout =
+                    assertThrows(
+                            HttpTransportException.class, () -> executor.execute(List.of("PING")));
+            assertEquals("transport_timeout", timeout.errorCode());
+            assertFalse(timeout.safeToRetry());
+
+            assertArrayEquals(bytes("still-usable"), (byte[]) executor.execute(List.of("PING")));
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test
+    void rejectsLateHttpErrorsWithTimeoutPrecedence() throws IOException {
+        AtomicBoolean expired = new AtomicBoolean();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    readJson(exchange);
+                                    expired.set(true);
+                                    replyJson(
+                                            exchange,
+                                            503,
+                                            Map.of(
+                                                    "error",
+                                                    Map.of(
+                                                            "code",
+                                                            "server_busy",
+                                                            "message",
+                                                            "busy")));
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.defaults(),
+                                () -> expired.get() ? 31_000_000_000L : 0L)) {
+            HttpTransportException timeout =
+                    assertThrows(
+                            HttpTransportException.class, () -> executor.execute(List.of("PING")));
+            assertEquals("transport_timeout", timeout.errorCode());
+        }
+    }
+
+    @Test
+    void rejectsLateHttpDecodeFailuresWithTimeoutPrecedence() throws IOException {
+        AtomicBoolean expired = new AtomicBoolean();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    readJson(exchange);
+                                    expired.set(true);
+                                    byte[] body =
+                                            "{\"results\":[}".getBytes(StandardCharsets.UTF_8);
+                                    exchange.getResponseHeaders()
+                                            .set("Content-Type", "application/json");
+                                    exchange.sendResponseHeaders(200, body.length);
+                                    exchange.getResponseBody().write(body);
+                                    exchange.close();
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.defaults(),
+                                () -> expired.get() ? 31_000_000_000L : 0L)) {
+            HttpTransportException timeout =
+                    assertThrows(
+                            HttpTransportException.class, () -> executor.execute(List.of("PING")));
+            assertEquals("transport_timeout", timeout.errorCode());
+        }
+    }
+
+    @Test
+    void rejectsLateHttpPipelineMappingFailuresWithTimeoutPrecedence() throws Exception {
+        AtomicInteger clockReads = new AtomicInteger();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    readJson(exchange);
+                                    replyJson(
+                                            exchange,
+                                            200,
+                                            Map.of(
+                                                    "encoding",
+                                                    "ferricstore-json-v1",
+                                                    "results",
+                                                    List.of(
+                                                            Map.of(
+                                                                    "status", "ok", "value",
+                                                                    "one"))));
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.defaults(),
+                                () -> clockReads.getAndIncrement() >= 4 ? 31_000_000_000L : 0L)) {
+            ExecutionException failure =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    executor.pipelineAsync(
+                                                    List.of(
+                                                            List.of("ECHO", "one"),
+                                                            List.of("ECHO", "two")))
+                                            .get(1, TimeUnit.SECONDS));
+            HttpTransportException timeout =
+                    assertInstanceOf(HttpTransportException.class, failure.getCause());
+            assertEquals("transport_timeout", timeout.errorCode());
+        }
+    }
+
+    @Test
+    void rejectsLateHttpFlowCreateManyMappingFailuresWithTimeoutPrecedence() throws Exception {
+        AtomicInteger clockReads = new AtomicInteger();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    readJson(exchange);
+                                    replyJson(
+                                            exchange,
+                                            200,
+                                            Map.of(
+                                                    "encoding",
+                                                    "ferricstore-json-v1",
+                                                    "results",
+                                                    List.of(
+                                                            Map.of(
+                                                                    "status",
+                                                                    "ok",
+                                                                    "value",
+                                                                    List.of("one")))));
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.defaults(),
+                                () -> clockReads.getAndIncrement() >= 4 ? 31_000_000_000L : 0L)) {
+            ExecutionException failure =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    executor.pipelineAsync(
+                                                    List.of(
+                                                            flowCreate("id-a", null),
+                                                            flowCreate("id-b", null)))
+                                            .get(1, TimeUnit.SECONDS));
+            HttpTransportException timeout =
+                    assertInstanceOf(HttpTransportException.class, failure.getCause());
+            assertEquals("transport_timeout", timeout.errorCode());
+        }
+    }
+
+    @Test
+    void finiteHttpDeadlineStillAppliesWhenTheMonotonicClockWraps() throws IOException {
+        AtomicBoolean expired = new AtomicBoolean();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    readJson(exchange);
+                                    expired.set(true);
+                                    replyOk(exchange, "late");
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.builder()
+                                        .requestTimeout(Duration.ofSeconds(1))
+                                        .build(),
+                                () ->
+                                        expired.get()
+                                                ? Long.MIN_VALUE + 1_000_000_001L
+                                                : Long.MAX_VALUE - 10L)) {
+            HttpTransportException timeout =
+                    assertThrows(
+                            HttpTransportException.class, () -> executor.execute(List.of("PING")));
+            assertEquals("transport_timeout", timeout.errorCode());
         }
     }
 
