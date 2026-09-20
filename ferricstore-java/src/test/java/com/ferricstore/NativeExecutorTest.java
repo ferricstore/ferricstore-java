@@ -1053,6 +1053,7 @@ final class NativeExecutorTest {
                             NativeTransportOptions.defaults(),
                             System::nanoTime,
                             Duration.ofSeconds(30))) {
+                executor.setSendBufferSizeForTesting(1_024);
                 CompletableFuture<Object> sent =
                         executor.executeAsync(
                                 List.of("SET", "blocked", new byte[48 * 1024 * 1024]));
