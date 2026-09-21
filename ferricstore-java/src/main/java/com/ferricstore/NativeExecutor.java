@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -98,6 +99,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private final AtomicReference<NegotiatedCapabilities> negotiatedCapabilities =
             new AtomicReference<>();
     private final AtomicBoolean authenticated = new AtomicBoolean();
+    private final Set<SessionOpening> sessionOpenings = new HashSet<>();
 
     private NativeExecutor(
             NativeEndpoint endpoint,
@@ -123,13 +125,24 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             LongSupplier nanoTime,
             Duration requestTimeout)
             throws IOException {
+        this(endpoint, transportOptions, dedicatedSession, nanoTime, requestTimeout, null);
+    }
+
+    private NativeExecutor(
+            NativeEndpoint endpoint,
+            NativeTransportOptions transportOptions,
+            boolean dedicatedSession,
+            LongSupplier nanoTime,
+            Duration requestTimeout,
+            SessionOpening opening)
+            throws IOException {
         this.endpoint = endpoint;
         this.transportOptions = transportOptions;
         this.pendingSlots = new Semaphore(transportOptions.maxPendingRequests());
         this.nanoTime = Objects.requireNonNull(nanoTime, "nano time");
         this.requestTimeout = requirePositiveTimeout(requestTimeout);
         this.dedicatedSession = dedicatedSession;
-        Socket connected = connectSocket(endpoint, transportOptions.sslContext());
+        Socket connected = connectSocket(endpoint, transportOptions.sslContext(), opening);
         this.socket = connected;
         try {
             this.input = connected.getInputStream();
@@ -146,6 +159,9 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         this.reconnectExecutor = Executors.newSingleThreadExecutor(NativeExecutor::reconnectThread);
         this.readerThread = new Thread(() -> readLoop(this.input), "ferricstore-native-reader");
         this.readerThread.setDaemon(true);
+        if (opening != null) {
+            opening.attachExecutor(this);
+        }
         this.readerThread.start();
     }
 
@@ -226,19 +242,80 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
     @Override
     public SessionCommandExecutor openSession() {
+        SessionOpening opening = beginSessionOpening();
+        NativeExecutor session = null;
+        boolean published = false;
         try {
-            NativeExecutor session =
-                    new NativeExecutor(endpoint, transportOptions, true, nanoTime, requestTimeout);
-            try {
-                session.initialize();
-                return session;
-            } catch (RuntimeException error) {
-                session.close();
-                throw error;
+            session =
+                    new NativeExecutor(
+                            endpoint, transportOptions, true, nanoTime, requestTimeout, opening);
+            session.initialize();
+            if (!publishSessionOpening(opening)) {
+                throw NativeProtocolException.notSent("native connection is closed");
             }
+            published = true;
+            return session;
         } catch (IOException error) {
+            if (closed.get() || opening.cancelled()) {
+                throw NativeProtocolException.notSent("native connection is closed", error);
+            }
             throw new NativeProtocolException(
                     "failed to open dedicated FerricStore native session", error);
+        } catch (RuntimeException error) {
+            if (closed.get() || opening.cancelled()) {
+                throw NativeProtocolException.notSent("native connection is closed", error);
+            }
+            throw error;
+        } finally {
+            if (!published) {
+                removeSessionOpening(opening);
+                if (session != null) {
+                    closeUnpublishedSession(session);
+                }
+            }
+        }
+    }
+
+    private static void closeUnpublishedSession(NativeExecutor session) {
+        if (!session.closed.get()) {
+            session.close();
+        }
+    }
+
+    private SessionOpening beginSessionOpening() {
+        synchronized (sessionOpenings) {
+            if (closed.get()) {
+                throw NativeProtocolException.notSent("native connection is closed");
+            }
+            SessionOpening opening = new SessionOpening();
+            sessionOpenings.add(opening);
+            return opening;
+        }
+    }
+
+    private boolean publishSessionOpening(SessionOpening opening) {
+        synchronized (sessionOpenings) {
+            if (closed.get() || opening.cancelled()) {
+                return false;
+            }
+            sessionOpenings.remove(opening);
+            return true;
+        }
+    }
+
+    private void removeSessionOpening(SessionOpening opening) {
+        synchronized (sessionOpenings) {
+            sessionOpenings.remove(opening);
+        }
+    }
+
+    private void cancelSessionOpenings() {
+        SessionOpening[] openings;
+        synchronized (sessionOpenings) {
+            openings = sessionOpenings.toArray(SessionOpening[]::new);
+        }
+        for (SessionOpening opening : openings) {
+            opening.cancel();
         }
     }
 
@@ -1248,23 +1325,25 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     }
 
     private void terminate(RuntimeException failure) {
-        if (closed.compareAndSet(false, true)) {
-            try {
-                socket.close();
-            } catch (IOException ignored) {
-                // The original protocol or transport failure remains authoritative.
-            }
-            writeExecutor.shutdownNow();
-            reconnectExecutor.shutdownNow();
-            CompletableFuture<NativeExecutor> pendingReplacement = replacement.get();
-            if (pendingReplacement != null) {
-                pendingReplacement.whenComplete(
-                        (next, replacementFailure) -> {
-                            if (next != null) {
-                                next.close();
-                            }
-                        });
-            }
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        cancelSessionOpenings();
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // The original protocol or transport failure remains authoritative.
+        }
+        writeExecutor.shutdownNow();
+        reconnectExecutor.shutdownNow();
+        CompletableFuture<NativeExecutor> pendingReplacement = replacement.get();
+        if (pendingReplacement != null) {
+            pendingReplacement.whenComplete(
+                    (next, replacementFailure) -> {
+                        if (next != null) {
+                            next.close();
+                        }
+                    });
         }
         assembler.clear();
         pending.forEach(
@@ -1447,48 +1526,110 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
     private record PreparedCommand(int opcode, long laneId, Object payload, int flags) {}
 
-    private static Socket connectSocket(NativeEndpoint endpoint, SSLContext sslContext)
+    private static Socket connectSocket(
+            NativeEndpoint endpoint, SSLContext sslContext, SessionOpening opening)
             throws IOException {
-        Socket raw = new Socket();
-        raw.setTcpNoDelay(true);
-        raw.connect(
-                new InetSocketAddress(endpoint.host(), endpoint.port()),
-                Math.toIntExact(CONNECT_TIMEOUT.toMillis()));
-        if (!endpoint.tls()) {
-            return raw;
-        }
+        return connectSocket(
+                endpoint,
+                sslContext,
+                opening,
+                new NativeSocketFactory() {
+                    @Override
+                    public Socket openRaw() {
+                        return new Socket();
+                    }
 
-        SSLContext context;
+                    @Override
+                    public Socket createTls(Socket raw, NativeEndpoint target, SSLContext context)
+                            throws IOException {
+                        return context.getSocketFactory()
+                                .createSocket(raw, target.host(), target.port(), true);
+                    }
+                });
+    }
+
+    static Socket connectSocketForTesting(
+            NativeEndpoint endpoint, SSLContext sslContext, NativeSocketFactory factory)
+            throws IOException {
+        return connectSocket(
+                endpoint, sslContext, null, Objects.requireNonNull(factory, "factory"));
+    }
+
+    private static Socket connectSocket(
+            NativeEndpoint endpoint,
+            SSLContext sslContext,
+            SessionOpening opening,
+            NativeSocketFactory factory)
+            throws IOException {
+        Socket raw = null;
+        Socket layered = null;
         try {
-            context = sslContext == null ? SSLContext.getDefault() : sslContext;
-        } catch (java.security.NoSuchAlgorithmException error) {
-            raw.close();
-            throw new IOException("default TLS context is unavailable", error);
-        }
-        Socket layered;
-        try {
-            layered =
-                    context.getSocketFactory()
-                            .createSocket(raw, endpoint.host(), endpoint.port(), true);
+            raw = factory.openRaw();
+            if (opening != null) {
+                opening.attachSocket(raw);
+            }
+            raw.setTcpNoDelay(true);
+            raw.connect(
+                    new InetSocketAddress(endpoint.host(), endpoint.port()),
+                    Math.toIntExact(CONNECT_TIMEOUT.toMillis()));
+            if (!endpoint.tls()) {
+                return raw;
+            }
+
+            SSLContext context;
+            try {
+                context = sslContext == null ? SSLContext.getDefault() : sslContext;
+            } catch (java.security.NoSuchAlgorithmException error) {
+                throw new IOException("default TLS context is unavailable", error);
+            }
+            layered = factory.createTls(raw, endpoint, context);
+            if (!(layered instanceof SSLSocket tls)) {
+                throw new IOException("TLS socket factory did not create an SSLSocket");
+            }
+            if (opening != null) {
+                opening.attachSocket(layered);
+            }
+            SSLParameters parameters = tls.getSSLParameters();
+            parameters.setEndpointIdentificationAlgorithm("HTTPS");
+            tls.setSSLParameters(parameters);
+            tls.setSoTimeout(Math.toIntExact(REQUEST_TIMEOUT.toMillis()));
+            tls.startHandshake();
+            tls.setSoTimeout(0);
+            return tls;
         } catch (IOException | RuntimeException error) {
+            closeSocket(layered, raw, error);
+            throw error;
+        }
+    }
+
+    @SuppressWarnings("PMD.CompareObjectsWithEquals")
+    private static void closeSocket(Socket layered, Socket raw, Throwable failure) {
+        // Resource aliasing is based on object identity, not socket value equality.
+        if (layered != null) {
+            try {
+                layered.close();
+            } catch (IOException closeError) {
+                if (closeError != failure) {
+                    failure.addSuppressed(closeError);
+                }
+            }
+        }
+        if (raw != null && raw != layered) {
             try {
                 raw.close();
             } catch (IOException closeError) {
-                error.addSuppressed(closeError);
+                if (closeError != failure) {
+                    failure.addSuppressed(closeError);
+                }
             }
-            throw error;
         }
-        if (!(layered instanceof SSLSocket tls)) {
-            layered.close();
-            throw new IOException("TLS socket factory did not create an SSLSocket");
-        }
-        SSLParameters parameters = tls.getSSLParameters();
-        parameters.setEndpointIdentificationAlgorithm("HTTPS");
-        tls.setSSLParameters(parameters);
-        tls.setSoTimeout(Math.toIntExact(REQUEST_TIMEOUT.toMillis()));
-        tls.startHandshake();
-        tls.setSoTimeout(0);
-        return tls;
+    }
+
+    interface NativeSocketFactory {
+        Socket openRaw() throws IOException;
+
+        Socket createTls(Socket raw, NativeEndpoint endpoint, SSLContext context)
+                throws IOException;
     }
 
     private record PendingRequest(
@@ -1500,6 +1641,53 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             boolean priorAttemptSent,
             Socket connection,
             OutputStream output) {}
+
+    // Cancellation may race with attachment; cleanup is eventual rather than a blocking barrier.
+    private static final class SessionOpening {
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+        private final AtomicReference<Socket> socket = new AtomicReference<>();
+        private final AtomicReference<NativeExecutor> executor = new AtomicReference<>();
+
+        private void attachSocket(Socket current) {
+            socket.set(current);
+            if (cancelled.get()) {
+                closeSocket(current);
+            }
+        }
+
+        private void attachExecutor(NativeExecutor current) {
+            executor.set(current);
+            if (cancelled.get()) {
+                current.close();
+            }
+        }
+
+        private boolean cancelled() {
+            return cancelled.get();
+        }
+
+        private void cancel() {
+            if (!cancelled.compareAndSet(false, true)) {
+                return;
+            }
+            closeSocket(socket.get());
+            NativeExecutor current = executor.get();
+            if (current != null) {
+                current.close();
+            }
+        }
+
+        private static void closeSocket(Socket current) {
+            if (current == null) {
+                return;
+            }
+            try {
+                current.close();
+            } catch (IOException ignored) {
+                // Session opening is already being cancelled.
+            }
+        }
+    }
 
     private static final class GoAwaySignal extends RuntimeException {
         private static final long serialVersionUID = 1L;

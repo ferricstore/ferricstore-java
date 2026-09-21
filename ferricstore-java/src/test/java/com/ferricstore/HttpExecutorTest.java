@@ -31,10 +31,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.Test;
 
 final class HttpExecutorTest {
@@ -198,6 +201,40 @@ final class HttpExecutorTest {
             assertArrayEquals(bytes("reply-1"), (byte[]) held.get(5, TimeUnit.SECONDS));
             assertArrayEquals(bytes("reply-2"), (byte[]) next.get(5, TimeUnit.SECONDS));
             assertEquals(2, requests.get());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void closingExecutorRejectsQueuedRequestAsNotSentTransportFailure() throws Exception {
+        CountDownLatch firstArrived = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (TestServer server = capacityServer(firstArrived, release, new AtomicInteger())) {
+            CompletableFuture<Object> held;
+            CompletableFuture<Object> queued;
+            try (HttpExecutor executor =
+                    HttpExecutor.connect(
+                            server.url(),
+                            HttpTransportOptions.builder()
+                                    .requestTimeout(Duration.ofSeconds(5))
+                                    .maxConcurrentRequests(1)
+                                    .build())) {
+                held = executor.executeAsync(List.of("PING"));
+                assertTrue(firstArrived.await(5, TimeUnit.SECONDS));
+                queued = executor.executeAsync(List.of("PING"));
+            }
+
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> queued.get(1, TimeUnit.SECONDS));
+            HttpTransportException closed =
+                    assertInstanceOf(HttpTransportException.class, failure.getCause());
+            assertEquals("client_closed", closed.errorCode());
+            assertEquals(RequestDelivery.NOT_SENT, closed.delivery());
+            assertFalse(closed.retryable());
+
+            release.countDown();
+            assertArrayEquals(bytes("reply-1"), (byte[]) held.get(5, TimeUnit.SECONDS));
         } finally {
             release.countDown();
         }
@@ -422,6 +459,43 @@ final class HttpExecutorTest {
     }
 
     @Test
+    void rejectsTrailingDataAfterTheHttpResponseEnvelope() throws IOException {
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    byte[] envelope =
+                                            JSON.writeValueAsBytes(
+                                                    Map.of(
+                                                            "encoding",
+                                                            "ferricstore-json-v1",
+                                                            "results",
+                                                            List.of(
+                                                                    Map.of(
+                                                                            "status", "ok", "value",
+                                                                            "pong"))));
+                                    byte[] trailing = "\n{}".getBytes(StandardCharsets.UTF_8);
+                                    byte[] body = new byte[envelope.length + trailing.length];
+                                    System.arraycopy(envelope, 0, body, 0, envelope.length);
+                                    System.arraycopy(
+                                            trailing, 0, body, envelope.length, trailing.length);
+                                    exchange.getResponseHeaders()
+                                            .set("Content-Type", "application/json");
+                                    exchange.sendResponseHeaders(200, body.length);
+                                    exchange.getResponseBody().write(body);
+                                    exchange.close();
+                                });
+                HttpExecutor executor =
+                        HttpExecutor.connect(server.url(), HttpTransportOptions.defaults())) {
+            HttpTransportException error =
+                    assertThrows(
+                            HttpTransportException.class, () -> executor.execute(List.of("PING")));
+
+            assertEquals("invalid_response", error.errorCode());
+            assertTrue(error.getMessage().contains("malformed JSON"));
+        }
+    }
+
+    @Test
     void basicAuthenticationMatchesTheHttpServerContract() throws IOException {
         List<String> authorizations = new CopyOnWriteArrayList<>();
         try (TestServer server =
@@ -623,8 +697,124 @@ final class HttpExecutorTest {
                     assertThrows(ExecutionException.class, () -> closed.get(1, TimeUnit.SECONDS));
             HttpTransportException notSent =
                     assertInstanceOf(HttpTransportException.class, thrown.getCause());
+            assertEquals("client_closed", notSent.errorCode());
             assertEquals(RequestDelivery.NOT_SENT, notSent.delivery());
+            assertFalse(notSent.retryable());
             assertEquals(0, requests.get());
+        }
+    }
+
+    @Test
+    void closingAfterPermitAcquisitionRejectsBeforeTheHttpExchangeStarts() throws Exception {
+        CountDownLatch permitCheck = new CountDownLatch(1);
+        CountDownLatch continueSend = new CountDownLatch(1);
+        AtomicInteger clockCalls = new AtomicInteger();
+        AtomicInteger requests = new AtomicInteger();
+        AtomicReference<HttpExecutor> owner = new AtomicReference<>();
+        LongSupplier clock =
+                () -> {
+                    if (clockCalls.incrementAndGet() == 3) {
+                        permitCheck.countDown();
+                        try {
+                            if (!continueSend.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("HTTP test clock was not released");
+                            }
+                        } catch (InterruptedException error) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("HTTP test clock interrupted", error);
+                        }
+                    }
+                    return 0L;
+                };
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    requests.incrementAndGet();
+                                    replyOk(exchange, "unexpected");
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(server.url(), HttpTransportOptions.defaults(), clock)) {
+            owner.set(executor);
+            Future<CompletableFuture<Object>> invocation =
+                    caller.submit(() -> executor.executeAsync(List.of("PING")));
+            assertTrue(permitCheck.await(5, TimeUnit.SECONDS));
+            owner.get().close();
+            continueSend.countDown();
+
+            CompletableFuture<Object> request = invocation.get(1, TimeUnit.SECONDS);
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> request.get(1, TimeUnit.SECONDS));
+            HttpTransportException closed =
+                    assertInstanceOf(HttpTransportException.class, failure.getCause());
+            assertEquals("client_closed", closed.errorCode());
+            assertEquals(RequestDelivery.NOT_SENT, closed.delivery());
+            assertFalse(closed.retryable());
+            assertEquals(0, requests.get());
+        } finally {
+            continueSend.countDown();
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void closeClassificationRemainsNotSentIfTheDeadlineExpiresDuringRejection() throws Exception {
+        CountDownLatch permitCheck = new CountDownLatch(1);
+        CountDownLatch continueSend = new CountDownLatch(1);
+        AtomicInteger clockCalls = new AtomicInteger();
+        AtomicLong now = new AtomicLong();
+        AtomicInteger requests = new AtomicInteger();
+        AtomicReference<HttpExecutor> owner = new AtomicReference<>();
+        LongSupplier clock =
+                () -> {
+                    if (clockCalls.incrementAndGet() == 3) {
+                        permitCheck.countDown();
+                        try {
+                            if (!continueSend.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("HTTP test clock was not released");
+                            }
+                        } catch (InterruptedException error) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("HTTP test clock interrupted", error);
+                        }
+                        return 0L;
+                    }
+                    return now.get();
+                };
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    requests.incrementAndGet();
+                                    replyOk(exchange, "unexpected");
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.builder()
+                                        .requestTimeout(Duration.ofNanos(1))
+                                        .build(),
+                                clock)) {
+            owner.set(executor);
+            Future<CompletableFuture<Object>> invocation =
+                    caller.submit(() -> executor.executeAsync(List.of("PING")));
+            assertTrue(permitCheck.await(5, TimeUnit.SECONDS));
+            owner.get().close();
+            now.set(2);
+            continueSend.countDown();
+
+            CompletableFuture<Object> request = invocation.get(1, TimeUnit.SECONDS);
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> request.get(1, TimeUnit.SECONDS));
+            HttpTransportException closed =
+                    assertInstanceOf(HttpTransportException.class, failure.getCause());
+            assertEquals("client_closed", closed.errorCode());
+            assertEquals(RequestDelivery.NOT_SENT, closed.delivery());
+            assertFalse(closed.retryable());
+            assertEquals(0, requests.get());
+        } finally {
+            continueSend.countDown();
+            caller.shutdownNow();
         }
     }
 
@@ -954,6 +1144,8 @@ final class HttpExecutorTest {
                     assertThrows(
                             HttpTransportException.class, () -> executor.execute(List.of("PING")));
             assertEquals("transport_timeout", timeout.errorCode());
+            assertEquals(RequestDelivery.UNKNOWN, timeout.delivery());
+            assertFalse(timeout.retryable());
             assertFalse(timeout.safeToRetry());
         }
 

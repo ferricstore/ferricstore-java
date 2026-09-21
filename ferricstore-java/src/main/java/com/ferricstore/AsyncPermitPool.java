@@ -32,7 +32,7 @@ final class AsyncPermitPool implements AutoCloseable {
     CompletableFuture<Permit> acquire(Long timeoutNanos) {
         synchronized (this) {
             if (closed) {
-                return AsyncFutures.failed(new IllegalStateException("permit pool is closed"));
+                return AsyncFutures.failed(new ClosedException());
             }
             if (available > 0) {
                 available--;
@@ -115,7 +115,7 @@ final class AsyncPermitPool implements AutoCloseable {
             closing = new ArrayDeque<>(waiters);
             waiters.clear();
         }
-        IllegalStateException failure = new IllegalStateException("permit pool is closed");
+        ClosedException failure = new ClosedException();
         while (!closing.isEmpty()) {
             Waiter waiter = closing.removeFirst();
             if (waiter.timeout != null) {
@@ -150,6 +150,14 @@ final class AsyncPermitPool implements AutoCloseable {
             if (released.compareAndSet(false, true)) {
                 owner.release();
             }
+        }
+    }
+
+    static final class ClosedException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        private ClosedException() {
+            super("permit pool is closed");
         }
     }
 

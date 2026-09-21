@@ -97,6 +97,14 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicReference<HttpClient.Version> observedVersion = new AtomicReference<>();
 
+    private static final class ExecutorClosedException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        private ExecutorClosedException() {
+            super("HTTP executor is closed");
+        }
+    }
+
     private HttpExecutor(String endpoint, HttpTransportOptions options) {
         this(endpoint, options, System::nanoTime);
     }
@@ -365,7 +373,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private CompletableFuture<HttpResponse<byte[]>> sendFollowingRedirectsAsync(
             EncodedBody initialBody, Long deadlineNanos, Long initialRemaining) {
         return sendRedirectAsync(
-                commandEndpoint, "POST", initialBody, deadlineNanos, initialRemaining, 0);
+                commandEndpoint, "POST", initialBody, deadlineNanos, initialRemaining, 0, false);
     }
 
     private CompletableFuture<HttpResponse<byte[]>> sendRedirectAsync(
@@ -374,7 +382,8 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             EncodedBody body,
             Long deadlineNanos,
             Long remaining,
-            int redirectCount) {
+            int redirectCount,
+            boolean exchangeStarted) {
         try {
             String contentType = compact ? HttpMessagePackCodec.CONTENT_TYPE : "application/json";
             HttpRequest.Builder request =
@@ -397,6 +406,11 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                     response ->
                             followRedirectIfNeeded(
                                     response, current, method, body, deadlineNanos, redirectCount));
+        } catch (ExecutorClosedException error) {
+            if (exchangeStarted) {
+                return AsyncFutures.failed(closedFailure(error, RequestDelivery.UNKNOWN));
+            }
+            return AsyncFutures.failed(error);
         } catch (RuntimeException error) {
             return AsyncFutures.failed(error);
         }
@@ -435,7 +449,13 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                         new HttpTimeoutException("FerricStore HTTP redirect deadline exceeded"));
             }
             return sendRedirectAsync(
-                    redirect, nextMethod, nextBody, deadlineNanos, remaining, redirectCount + 1);
+                    redirect,
+                    nextMethod,
+                    nextBody,
+                    deadlineNanos,
+                    remaining,
+                    redirectCount + 1,
+                    true);
         } catch (IOException | RuntimeException error) {
             return AsyncFutures.failed(error);
         }
@@ -971,7 +991,7 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private HttpClient requireOpenClient() {
         HttpClient current = client.get();
         if (closed.get() || current == null) {
-            throw new IllegalStateException("HTTP executor is closed");
+            throw new ExecutorClosedException();
         }
         return current;
     }
@@ -1039,6 +1059,9 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         if (failure instanceof HttpTransportException transport) {
             return transport;
         }
+        if (failure instanceof ExecutorClosedException) {
+            return closedFailure(failure, RequestDelivery.NOT_SENT);
+        }
         return transportFailure(
                 "FerricStore HTTP request was rejected before submission: " + failure.getMessage(),
                 "client_request_invalid",
@@ -1050,6 +1073,11 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             String message, String code, Throwable cause, RequestDelivery delivery) {
         return new HttpTransportException(
                 message, 0, code, false, false, null, Map.of(), cause, delivery);
+    }
+
+    private static HttpTransportException closedFailure(Throwable cause, RequestDelivery delivery) {
+        return transportFailure(
+                "FerricStore HTTP executor is closed", "client_closed", cause, delivery);
     }
 
     private RuntimeException mapCapacityFailure(Throwable failure) {
@@ -1067,6 +1095,9 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                     "client_overloaded",
                     error,
                     RequestDelivery.NOT_SENT);
+        }
+        if (error instanceof AsyncPermitPool.ClosedException) {
+            return closedFailure(error, RequestDelivery.NOT_SENT);
         }
         if (error instanceof RuntimeException runtime) {
             return runtime;
@@ -1143,6 +1174,9 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         }
         if (error instanceof HttpTransportException transport) {
             return transport;
+        }
+        if (error instanceof ExecutorClosedException) {
+            return closedFailure(error, RequestDelivery.NOT_SENT);
         }
         if (error instanceof IOException) {
             return transportFailure(
@@ -1236,6 +1270,12 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
 
     private RuntimeException timeoutIfExpired(Long deadlineNanos, Throwable cause) {
         if (deadlineNanos == null || remainingNanos(deadlineNanos) > 0) {
+            return null;
+        }
+        Throwable error = AsyncFutures.unwrap(cause);
+        if (error instanceof ExecutorClosedException
+                || (error instanceof RequestDeliveryFailure delivery
+                        && delivery.delivery() == RequestDelivery.NOT_SENT)) {
             return null;
         }
         return transportFailure(

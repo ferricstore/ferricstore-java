@@ -21,7 +21,11 @@ final class HttpResponseDecoder {
             if (input.nextToken() != JsonToken.START_OBJECT) {
                 throw new IOException("HTTP response root must be an object");
             }
-            return readResponse(input);
+            Map<String, Object> response = readResponse(input);
+            if (input.nextToken() != null) {
+                throw new IOException("HTTP response contains trailing data");
+            }
+            return response;
         }
     }
 
