@@ -13,6 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
@@ -26,12 +29,16 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -610,6 +617,268 @@ final class NativeExecutorTest {
             assertInstanceOf(NativeProtocolException.class, failure.getCause());
             assertTrue(failure.getCause().getMessage().contains("requests in flight"));
             served.get(1, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void scheduledBusyRetryTimesOutBeforeItsRetryIsSentAsNotSent() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+
+                                    NativeFrame request = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            request.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_BUSY,
+                                            Map.of(
+                                                    "message",
+                                                    "busy",
+                                                    "retryable",
+                                                    true,
+                                                    "safe_to_retry",
+                                                    true,
+                                                    "retry_after_ms",
+                                                    1_000L));
+                                    socket.setSoTimeout(500);
+                                    assertThrows(
+                                            SocketTimeoutException.class,
+                                            () -> readRequest(socket));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connectWithOptions(
+                            "ferric://127.0.0.1:" + server.getLocalPort(),
+                            NativeTransportOptions.defaults(),
+                            System::nanoTime,
+                            Duration.ofMillis(100))) {
+                CompletableFuture<Object> response = executor.executeAsync(List.of("PING"));
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> response.get(2, TimeUnit.SECONDS));
+                NativeProtocolException timeout =
+                        assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertEquals(RequestDelivery.NOT_SENT, timeout.delivery());
+                served.get(2, TimeUnit.SECONDS);
+            }
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void closeCompletesAQueuedNativeRetryWithoutWaitingForItsDelay() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        CountDownLatch keepOpen = new CountDownLatch(1);
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+
+                                    NativeFrame request = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            request.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_BUSY,
+                                            Map.of(
+                                                    "message",
+                                                    "busy",
+                                                    "retryable",
+                                                    true,
+                                                    "safe_to_retry",
+                                                    true,
+                                                    "retry_after_ms",
+                                                    10_000L));
+                                    assertTrue(keepOpen.await(5, TimeUnit.SECONDS));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                CompletableFuture<Object> response = executor.executeAsync(List.of("PING"));
+                assertThrows(TimeoutException.class, () -> response.get(1, TimeUnit.SECONDS));
+
+                closeExecutor(executor);
+
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+                NativeProtocolException closed =
+                        assertInstanceOf(NativeProtocolException.class, failure.getCause());
+                assertEquals(RequestDelivery.UNKNOWN, closed.delivery());
+            } finally {
+                keepOpen.countDown();
+            }
+            served.get(2, TimeUnit.SECONDS);
+        } finally {
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellingAQueuedRetryRemovesItsScheduledFutureAndNeverResubmits() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        CountDownLatch releaseServer = new CountDownLatch(1);
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+
+                                    NativeFrame request = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            request.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_BUSY,
+                                            Map.of(
+                                                    "message",
+                                                    "busy",
+                                                    "retryable",
+                                                    true,
+                                                    "safe_to_retry",
+                                                    true,
+                                                    "retry_after_ms",
+                                                    60_000L));
+                                    assertTrue(releaseServer.await(5, TimeUnit.SECONDS));
+                                    socket.setSoTimeout(500);
+                                    assertThrows(
+                                            SocketTimeoutException.class,
+                                            () -> readRequest(socket));
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                RecordingScheduledExecutor retries = new RecordingScheduledExecutor();
+                replaceRetryExecutor(executor, retries);
+
+                CompletableFuture<Object> response = executor.executeAsync(List.of("PING"));
+                assertTrue(retries.scheduled.await(5, TimeUnit.SECONDS));
+                assertEquals(1, retries.getQueue().size());
+                assertTrue(response.cancel(false));
+                assertTrue(awaitCondition(() -> retries.getQueue().isEmpty()));
+
+                Runnable scheduled = (Runnable) retries.lastScheduled.get();
+                scheduled.run();
+                releaseServer.countDown();
+                served.get(2, TimeUnit.SECONDS);
+            } finally {
+                releaseServer.countDown();
+            }
+        } finally {
+            releaseServer.countDown();
+            tasks.shutdownNow();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("PMD.AvoidAccessibilityAlteration")
+    void closeAndCancellationBeforeRetryRegistrationDoNotLeakTheRetryOperation() throws Exception {
+        ExecutorService tasks = Executors.newSingleThreadExecutor();
+        try (ServerSocket server = new ServerSocket(0)) {
+            Future<Void> served =
+                    tasks.submit(
+                            () -> {
+                                try (Socket socket = server.accept()) {
+                                    NativeFrame hello = readRequest(socket);
+                                    writeResponse(
+                                            socket,
+                                            hello.identity(),
+                                            0,
+                                            NativeProtocol.STATUS_OK,
+                                            hello(false, 4096));
+                                    socket.getInputStream().read();
+                                }
+                                return null;
+                            });
+
+            try (NativeExecutor executor =
+                    NativeExecutor.connect("ferric://127.0.0.1:" + server.getLocalPort())) {
+                RecordingScheduledExecutor retries = new RecordingScheduledExecutor();
+                replaceRetryExecutor(executor, retries);
+                CompletableFuture<Object> response = new CompletableFuture<>();
+                Class<?> operationType =
+                        Class.forName("com.ferricstore.NativeExecutor$RetryOperation");
+                Constructor<?> operationConstructor =
+                        operationType.getDeclaredConstructor(CompletableFuture.class);
+                operationConstructor.setAccessible(true);
+                Object operation = operationConstructor.newInstance(response);
+                Set<?> operations = retryOperations(executor);
+                response.whenComplete((ignored, failure) -> operations.remove(operation));
+                response.cancel(false);
+                closeExecutor(executor);
+
+                Method completeAttempt =
+                        NativeExecutor.class.getDeclaredMethod(
+                                "completeAttempt",
+                                int.class,
+                                long.class,
+                                byte[].class,
+                                int.class,
+                                int.class,
+                                long.class,
+                                operationType,
+                                NativeResponseCodec.Response.class);
+                completeAttempt.setAccessible(true);
+                completeAttempt.invoke(
+                        executor,
+                        0x0100,
+                        1L,
+                        new byte[0],
+                        0,
+                        0,
+                        System.nanoTime() + TimeUnit.SECONDS.toNanos(30),
+                        operation,
+                        new NativeResponseCodec.Response(
+                                NativeProtocol.STATUS_BUSY,
+                                Map.of(
+                                        "message",
+                                        "busy",
+                                        "retryable",
+                                        true,
+                                        "safe_to_retry",
+                                        true,
+                                        "retry_after_ms",
+                                        60_000L)));
+
+                assertEquals(0, operations.size());
+                assertEquals(0, retries.getQueue().size());
+                served.get(2, TimeUnit.SECONDS);
+            }
         } finally {
             tasks.shutdownNow();
         }
@@ -2647,5 +2916,63 @@ final class NativeExecutorTest {
 
     private static void closeExecutor(NativeExecutor executor) {
         executor.close();
+    }
+
+    @SuppressWarnings("PMD.AvoidAccessibilityAlteration")
+    private static void replaceRetryExecutor(
+            NativeExecutor executor, ScheduledExecutorService replacement)
+            throws ReflectiveOperationException {
+        Field retryExecutor = NativeExecutor.class.getDeclaredField("retryExecutor");
+        retryExecutor.setAccessible(true);
+        ScheduledExecutorService original = (ScheduledExecutorService) retryExecutor.get(executor);
+        retryExecutor.set(executor, replacement);
+        original.shutdownNow();
+    }
+
+    @SuppressWarnings("PMD.AvoidAccessibilityAlteration")
+    private static Set<?> retryOperations(NativeExecutor executor) {
+        try {
+            Field retryOperations = NativeExecutor.class.getDeclaredField("retryOperations");
+            retryOperations.setAccessible(true);
+            return (Set<?>) retryOperations.get(executor);
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError("failed to inspect retry operations", error);
+        }
+    }
+
+    private static boolean awaitCondition(java.util.function.BooleanSupplier condition)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return true;
+            }
+            Thread.yield();
+        }
+        return condition.getAsBoolean();
+    }
+
+    private static final class RecordingScheduledExecutor extends ScheduledThreadPoolExecutor {
+        private final CountDownLatch scheduled = new CountDownLatch(1);
+        private final AtomicReference<ScheduledFuture<?>> lastScheduled = new AtomicReference<>();
+
+        private RecordingScheduledExecutor() {
+            super(
+                    1,
+                    runnable -> {
+                        Thread thread = new Thread(runnable, "ferricstore-native-test-retry");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+            setRemoveOnCancelPolicy(true);
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+            ScheduledFuture<?> future = super.schedule(command, delay, unit);
+            lastScheduled.set(future);
+            scheduled.countDown();
+            return future;
+        }
     }
 }

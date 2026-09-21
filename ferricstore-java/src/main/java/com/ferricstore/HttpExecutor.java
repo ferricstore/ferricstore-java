@@ -23,8 +23,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeoutException;
@@ -94,8 +96,12 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     private final boolean compact;
     private final AsyncPermitPool requestSlots;
     private final LongSupplier nanoTime;
+    private final Runnable beforeExchangeForTesting;
+    private final Runnable beforeHttpSubmissionForTesting;
+    private final Object lifecycleLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicReference<HttpClient.Version> observedVersion = new AtomicReference<>();
+    private final Set<ActiveExchange> activeExchanges = ConcurrentHashMap.newKeySet();
 
     private static final class ExecutorClosedException extends IllegalStateException {
         private static final long serialVersionUID = 1L;
@@ -105,11 +111,135 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         }
     }
 
+    private final class ActiveExchange {
+        private final AsyncPermitPool.Permit permit;
+        private final CompletableFuture<Map<String, Object>> result;
+        private final AtomicReference<CompletableFuture<?>> exchange = new AtomicReference<>();
+        private boolean exchangeStarted;
+        private boolean terminated;
+
+        private ActiveExchange(
+                AsyncPermitPool.Permit permit, CompletableFuture<Map<String, Object>> result) {
+            this.permit = permit;
+            this.result = result;
+        }
+
+        private boolean beginExchange() {
+            synchronized (this) {
+                if (terminated) {
+                    return false;
+                }
+                exchangeStarted = true;
+                return true;
+            }
+        }
+
+        private boolean exchangeStarted() {
+            synchronized (this) {
+                return exchangeStarted;
+            }
+        }
+
+        private void attach(CompletableFuture<?> current) {
+            boolean cancel;
+            synchronized (this) {
+                exchange.set(current);
+                cancel = terminated;
+            }
+            if (cancel) {
+                cancelExchange(current);
+            }
+        }
+
+        private void closeFromExecutor() {
+            CompletableFuture<?> current;
+            RequestDelivery delivery;
+            synchronized (this) {
+                if (terminated) {
+                    return;
+                }
+                terminated = true;
+                current = exchange.get();
+                delivery = exchangeStarted ? RequestDelivery.UNKNOWN : RequestDelivery.NOT_SENT;
+            }
+            permit.close();
+            activeExchanges.remove(this);
+            result.completeExceptionally(closedFailure(new ExecutorClosedException(), delivery));
+            if (current != null) {
+                cancelExchange(current);
+            }
+        }
+
+        private void cancelFromCaller() {
+            CompletableFuture<?> current;
+            synchronized (this) {
+                if (terminated) {
+                    return;
+                }
+                terminated = true;
+                current = exchange.get();
+            }
+            if (current != null) {
+                cancelExchange(current);
+            }
+            permit.close();
+            activeExchanges.remove(this);
+        }
+
+        private void releaseWithoutExchange() {
+            synchronized (this) {
+                if (terminated) {
+                    return;
+                }
+                terminated = true;
+            }
+            permit.close();
+            activeExchanges.remove(this);
+        }
+
+        private static void cancelExchange(CompletableFuture<?> current) {
+            try {
+                current.cancel(true);
+            } catch (CancellationException error) {
+                if (!current.isCancelled()) {
+                    throw error;
+                }
+            }
+        }
+    }
+
     private HttpExecutor(String endpoint, HttpTransportOptions options) {
-        this(endpoint, options, System::nanoTime);
+        this(
+                endpoint,
+                options,
+                System::nanoTime,
+                HttpExecutor::noOpBeforeExchange,
+                HttpExecutor::noOpBeforeExchange);
     }
 
     HttpExecutor(String endpoint, HttpTransportOptions options, LongSupplier nanoTime) {
+        this(endpoint, options, nanoTime, HttpExecutor::noOpBeforeExchange);
+    }
+
+    HttpExecutor(
+            String endpoint,
+            HttpTransportOptions options,
+            LongSupplier nanoTime,
+            Runnable beforeExchangeForTesting) {
+        this(
+                endpoint,
+                options,
+                nanoTime,
+                beforeExchangeForTesting,
+                HttpExecutor::noOpBeforeExchange);
+    }
+
+    HttpExecutor(
+            String endpoint,
+            HttpTransportOptions options,
+            LongSupplier nanoTime,
+            Runnable beforeExchangeForTesting,
+            Runnable beforeHttpSubmissionForTesting) {
         commandEndpoint = commandEndpoint(endpoint, options);
         client = new AtomicReference<>(createClient(options));
         headers = authenticationHeaders(options);
@@ -122,6 +252,15 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
         requestSlots =
                 new AsyncPermitPool(options.maxConcurrentRequests(), options.maxPendingRequests());
         this.nanoTime = Objects.requireNonNull(nanoTime, "nano time");
+        this.beforeExchangeForTesting =
+                Objects.requireNonNull(beforeExchangeForTesting, "before exchange hook");
+        this.beforeHttpSubmissionForTesting =
+                Objects.requireNonNull(
+                        beforeHttpSubmissionForTesting, "before HTTP submission hook");
+    }
+
+    private static void noOpBeforeExchange() {
+        // Production requests do not need a lifecycle test barrier.
     }
 
     public static HttpExecutor connect(String endpoint) {
@@ -284,9 +423,14 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
 
     @Override
     public void close() {
-        closed.set(true);
-        client.set(null);
-        requestSlots.close();
+        synchronized (lifecycleLock) {
+            if (!closed.compareAndSet(false, true)) {
+                return;
+            }
+            client.set(null);
+            requestSlots.close();
+            activeExchanges.forEach(ActiveExchange::closeFromExecutor);
+        }
     }
 
     private CompletableFuture<Map<String, Object>> sendAsync(EncodedBody body, Long deadlineNanos) {
@@ -319,9 +463,28 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             Long deadlineNanos,
             AsyncPermitPool.Permit permit,
             CompletableFuture<Map<String, Object>> result) {
+        ActiveExchange active = new ActiveExchange(permit, result);
+        synchronized (lifecycleLock) {
+            if (closed.get()) {
+                active.closeFromExecutor();
+                return;
+            }
+            activeExchanges.add(active);
+        }
+        result.whenComplete(
+                (ignored, failure) -> {
+                    if (result.isCancelled()) {
+                        active.cancelFromCaller();
+                    }
+                });
+        beforeExchangeForTesting.run();
+        if (result.isDone()) {
+            active.cancelFromCaller();
+            return;
+        }
         Long remaining = remainingNanos(deadlineNanos);
         if (remaining != null && remaining <= 0) {
-            permit.close();
+            active.releaseWithoutExchange();
             result.completeExceptionally(
                     transportFailure(
                             "FerricStore HTTP request timed out waiting for client capacity",
@@ -331,16 +494,10 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             return;
         }
         CompletableFuture<HttpResponse<byte[]>> responseFuture =
-                sendFollowingRedirectsAsync(body, deadlineNanos, remaining);
-        result.whenComplete(
-                (ignored, failure) -> {
-                    if (result.isCancelled()) {
-                        responseFuture.cancel(true);
-                        permit.close();
-                    }
-                });
+                sendFollowingRedirectsAsync(body, deadlineNanos, remaining, active);
         responseFuture.whenComplete(
                 (response, failure) -> {
+                    activeExchanges.remove(active);
                     permit.close();
                     if (failure != null) {
                         RuntimeException timeout = timeoutIfExpired(deadlineNanos, failure);
@@ -371,9 +528,19 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
     }
 
     private CompletableFuture<HttpResponse<byte[]>> sendFollowingRedirectsAsync(
-            EncodedBody initialBody, Long deadlineNanos, Long initialRemaining) {
+            EncodedBody initialBody,
+            Long deadlineNanos,
+            Long initialRemaining,
+            ActiveExchange active) {
         return sendRedirectAsync(
-                commandEndpoint, "POST", initialBody, deadlineNanos, initialRemaining, 0, false);
+                commandEndpoint,
+                "POST",
+                initialBody,
+                deadlineNanos,
+                initialRemaining,
+                0,
+                false,
+                active);
     }
 
     private CompletableFuture<HttpResponse<byte[]>> sendRedirectAsync(
@@ -383,7 +550,8 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             Long deadlineNanos,
             Long remaining,
             int redirectCount,
-            boolean exchangeStarted) {
+            boolean exchangeStarted,
+            ActiveExchange active) {
         try {
             String contentType = compact ? HttpMessagePackCodec.CONTENT_TYPE : "application/json";
             HttpRequest.Builder request =
@@ -398,16 +566,33 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             } else {
                 request.GET();
             }
-            CompletableFuture<HttpResponse<byte[]>> exchange =
-                    requireOpenClient()
-                            .sendAsync(request.build(), boundedBodyHandler(maxResponseBytes));
+            CompletableFuture<HttpResponse<byte[]>> exchange;
+            synchronized (lifecycleLock) {
+                if (active != null && !active.beginExchange()) {
+                    return AsyncFutures.failed(
+                            closedFailure(new ExecutorClosedException(), RequestDelivery.NOT_SENT));
+                }
+                beforeHttpSubmissionForTesting.run();
+                exchange =
+                        requireOpenClient()
+                                .sendAsync(request.build(), boundedBodyHandler(maxResponseBytes));
+                if (active != null) {
+                    active.attach(exchange);
+                }
+            }
             return composeCancellable(
                     exchange,
                     response ->
                             followRedirectIfNeeded(
-                                    response, current, method, body, deadlineNanos, redirectCount));
+                                    response,
+                                    current,
+                                    method,
+                                    body,
+                                    deadlineNanos,
+                                    redirectCount,
+                                    active));
         } catch (ExecutorClosedException error) {
-            if (exchangeStarted) {
+            if (exchangeStarted || (active != null && active.exchangeStarted())) {
                 return AsyncFutures.failed(closedFailure(error, RequestDelivery.UNKNOWN));
             }
             return AsyncFutures.failed(error);
@@ -422,7 +607,8 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
             String method,
             EncodedBody body,
             Long deadlineNanos,
-            int redirectCount) {
+            int redirectCount,
+            ActiveExchange active) {
         try {
             String location = response.headers().firstValue("Location").orElse(null);
             if (!isRedirect(response.statusCode()) || location == null) {
@@ -455,7 +641,8 @@ public final class HttpExecutor implements CommandExecutor, AutoCloseable {
                     deadlineNanos,
                     remaining,
                     redirectCount + 1,
-                    true);
+                    true,
+                    active);
         } catch (IOException | RuntimeException error) {
             return AsyncFutures.failed(error);
         }
