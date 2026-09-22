@@ -16,25 +16,37 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.lang.reflect.Field;
+import java.net.Authenticator;
+import java.net.CookieHandler;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.WebSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.Test;
 
 final class HttpExecutorTest {
@@ -200,6 +212,209 @@ final class HttpExecutorTest {
             assertEquals(2, requests.get());
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void closingExecutorRejectsQueuedRequestAsNotSentTransportFailure() throws Exception {
+        CountDownLatch firstArrived = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (TestServer server = capacityServer(firstArrived, release, new AtomicInteger())) {
+            CompletableFuture<Object> held;
+            CompletableFuture<Object> queued;
+            try (HttpExecutor executor =
+                    HttpExecutor.connect(
+                            server.url(),
+                            HttpTransportOptions.builder()
+                                    .requestTimeout(Duration.ofSeconds(5))
+                                    .maxConcurrentRequests(1)
+                                    .build())) {
+                held = executor.executeAsync(List.of("PING"));
+                assertTrue(firstArrived.await(5, TimeUnit.SECONDS));
+                queued = executor.executeAsync(List.of("PING"));
+            }
+
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> queued.get(1, TimeUnit.SECONDS));
+            HttpTransportException closed =
+                    assertInstanceOf(HttpTransportException.class, failure.getCause());
+            assertEquals("client_closed", closed.errorCode());
+            assertEquals(RequestDelivery.NOT_SENT, closed.delivery());
+            assertFalse(closed.retryable());
+
+            ExecutionException heldFailure =
+                    assertThrows(ExecutionException.class, () -> held.get(1, TimeUnit.SECONDS));
+            HttpTransportException heldClosed =
+                    assertInstanceOf(HttpTransportException.class, heldFailure.getCause());
+            assertEquals("client_closed", heldClosed.errorCode());
+            assertEquals(RequestDelivery.UNKNOWN, heldClosed.delivery());
+
+            release.countDown();
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void closingExecutorCompletesAnActiveInfiniteRequestAndReleasesItsPermit() throws Exception {
+        CountDownLatch arrived = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger requests = new AtomicInteger();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    readJson(exchange);
+                                    requests.incrementAndGet();
+                                    arrived.countDown();
+                                    try {
+                                        if (!release.await(5, TimeUnit.SECONDS)) {
+                                            throw new IOException(
+                                                    "held HTTP request was not released");
+                                        }
+                                    } catch (InterruptedException error) {
+                                        Thread.currentThread().interrupt();
+                                        throw new IOException(
+                                                "HTTP test server interrupted", error);
+                                    }
+                                    replyOk(exchange, "late");
+                                });
+                HttpExecutor executor =
+                        HttpExecutor.connect(
+                                server.url(),
+                                HttpTransportOptions.builder().maxConcurrentRequests(1).build())) {
+            CompletableFuture<Object> active = executor.executeAsync(List.of("BLPOP", "queue", 0));
+            assertTrue(arrived.await(5, TimeUnit.SECONDS));
+            CompletableFuture<Object> queued = executor.executeAsync(List.of("PING"));
+
+            closeExecutor(executor);
+
+            ExecutionException activeFailure =
+                    assertThrows(ExecutionException.class, () -> active.get(1, TimeUnit.SECONDS));
+            HttpTransportException activeClosed =
+                    assertInstanceOf(HttpTransportException.class, activeFailure.getCause());
+            assertEquals("client_closed", activeClosed.errorCode());
+            assertEquals(RequestDelivery.UNKNOWN, activeClosed.delivery());
+
+            ExecutionException queuedFailure =
+                    assertThrows(ExecutionException.class, () -> queued.get(1, TimeUnit.SECONDS));
+            HttpTransportException queuedClosed =
+                    assertInstanceOf(HttpTransportException.class, queuedFailure.getCause());
+            assertEquals("client_closed", queuedClosed.errorCode());
+            assertEquals(RequestDelivery.NOT_SENT, queuedClosed.delivery());
+            assertEquals(1, requests.get());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void closeLinearizesWithHttpSubmissionAndCancelsTheTrackedFuture() throws Exception {
+        List<String> events = new CopyOnWriteArrayList<>();
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try (HttpExecutor executor =
+                new HttpExecutor(
+                        "http://localhost",
+                        HttpTransportOptions.defaults(),
+                        System::nanoTime,
+                        HttpExecutorTest::noOp)) {
+            RecordingHttpClient httpClient = new RecordingHttpClient(events, executor);
+            replaceHttpClient(executor, httpClient);
+            try {
+                Future<CompletableFuture<Object>> invocation =
+                        caller.submit(() -> executor.executeAsync(List.of("PING")));
+                assertTrue(
+                        httpClient.submissionEntered.await(5, TimeUnit.SECONDS),
+                        () -> "submission never entered: " + events);
+                httpClient.releaseSubmission.countDown();
+                assertTrue(
+                        httpClient.submissionReturned.await(5, TimeUnit.SECONDS),
+                        () -> "submission did not return: " + events);
+                assertTrue(
+                        httpClient.closeReturned.await(5, TimeUnit.SECONDS),
+                        () -> "close did not return: " + events);
+
+                assertEquals(List.of("submission-returned", "close-returned"), events);
+                CompletableFuture<Object> request = invocation.get(1, TimeUnit.SECONDS);
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> request.get(1, TimeUnit.SECONDS));
+                HttpTransportException closed =
+                        assertInstanceOf(HttpTransportException.class, failure.getCause());
+                assertEquals("client_closed", closed.errorCode());
+                assertEquals(RequestDelivery.UNKNOWN, closed.delivery());
+                assertTrue(httpClient.submitted.get().isCancelled());
+            } finally {
+                httpClient.releaseSubmission.countDown();
+            }
+        } finally {
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void closeCannotReturnBetweenExchangeRegistrationAndHttpSubmission() throws Exception {
+        List<String> events = new CopyOnWriteArrayList<>();
+        AtomicReference<HttpExecutor> owner = new AtomicReference<>();
+        CountDownLatch submissionBarrierEntered = new CountDownLatch(1);
+        CountDownLatch closeStarted = new CountDownLatch(1);
+        CountDownLatch closeReturned = new CountDownLatch(1);
+        CountDownLatch releaseSubmission = new CountDownLatch(1);
+        Runnable beforeSubmission =
+                () -> {
+                    submissionBarrierEntered.countDown();
+                    Thread closer =
+                            new Thread(
+                                    () -> {
+                                        closeStarted.countDown();
+                                        owner.get().close();
+                                        events.add("close-returned");
+                                        closeReturned.countDown();
+                                    },
+                                    "http-test-barrier-closer");
+                    closer.start();
+                    try {
+                        if (!releaseSubmission.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("HTTP submission barrier was not released");
+                        }
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError("HTTP submission barrier was interrupted", error);
+                    }
+                };
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try (HttpExecutor executor =
+                new HttpExecutor(
+                        "http://localhost",
+                        HttpTransportOptions.defaults(),
+                        System::nanoTime,
+                        HttpExecutorTest::noOp,
+                        beforeSubmission)) {
+            owner.set(executor);
+            RecordingHttpClient httpClient = new RecordingHttpClient(events, executor, false);
+            replaceHttpClient(executor, httpClient);
+            try {
+                Future<CompletableFuture<Object>> invocation =
+                        caller.submit(() -> executor.executeAsync(List.of("PING")));
+                assertTrue(submissionBarrierEntered.await(5, TimeUnit.SECONDS));
+                assertTrue(closeStarted.await(5, TimeUnit.SECONDS));
+                releaseSubmission.countDown();
+                assertTrue(httpClient.submissionReturned.await(5, TimeUnit.SECONDS));
+                assertTrue(closeReturned.await(5, TimeUnit.SECONDS));
+
+                assertEquals(List.of("submission-returned", "close-returned"), events);
+                CompletableFuture<Object> request = invocation.get(1, TimeUnit.SECONDS);
+                ExecutionException failure =
+                        assertThrows(
+                                ExecutionException.class, () -> request.get(1, TimeUnit.SECONDS));
+                HttpTransportException closed =
+                        assertInstanceOf(HttpTransportException.class, failure.getCause());
+                assertEquals(RequestDelivery.UNKNOWN, closed.delivery());
+                assertTrue(httpClient.submitted.get().isCancelled());
+            } finally {
+                releaseSubmission.countDown();
+            }
+        } finally {
+            caller.shutdownNow();
         }
     }
 
@@ -422,6 +637,43 @@ final class HttpExecutorTest {
     }
 
     @Test
+    void rejectsTrailingDataAfterTheHttpResponseEnvelope() throws IOException {
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    byte[] envelope =
+                                            JSON.writeValueAsBytes(
+                                                    Map.of(
+                                                            "encoding",
+                                                            "ferricstore-json-v1",
+                                                            "results",
+                                                            List.of(
+                                                                    Map.of(
+                                                                            "status", "ok", "value",
+                                                                            "pong"))));
+                                    byte[] trailing = "\n{}".getBytes(StandardCharsets.UTF_8);
+                                    byte[] body = new byte[envelope.length + trailing.length];
+                                    System.arraycopy(envelope, 0, body, 0, envelope.length);
+                                    System.arraycopy(
+                                            trailing, 0, body, envelope.length, trailing.length);
+                                    exchange.getResponseHeaders()
+                                            .set("Content-Type", "application/json");
+                                    exchange.sendResponseHeaders(200, body.length);
+                                    exchange.getResponseBody().write(body);
+                                    exchange.close();
+                                });
+                HttpExecutor executor =
+                        HttpExecutor.connect(server.url(), HttpTransportOptions.defaults())) {
+            HttpTransportException error =
+                    assertThrows(
+                            HttpTransportException.class, () -> executor.execute(List.of("PING")));
+
+            assertEquals("invalid_response", error.errorCode());
+            assertTrue(error.getMessage().contains("malformed JSON"));
+        }
+    }
+
+    @Test
     void basicAuthenticationMatchesTheHttpServerContract() throws IOException {
         List<String> authorizations = new CopyOnWriteArrayList<>();
         try (TestServer server =
@@ -617,14 +869,124 @@ final class HttpExecutorTest {
             }
             assertEquals(0, requests.get());
 
-            executor.close();
+            closeExecutor(executor);
             CompletableFuture<Object> closed = executor.executeAsync(List.of("PING"));
             ExecutionException thrown =
                     assertThrows(ExecutionException.class, () -> closed.get(1, TimeUnit.SECONDS));
             HttpTransportException notSent =
                     assertInstanceOf(HttpTransportException.class, thrown.getCause());
+            assertEquals("client_closed", notSent.errorCode());
             assertEquals(RequestDelivery.NOT_SENT, notSent.delivery());
+            assertFalse(notSent.retryable());
             assertEquals(0, requests.get());
+        }
+    }
+
+    @Test
+    void closingAfterPermitAcquisitionRejectsBeforeTheHttpExchangeStarts() throws Exception {
+        CountDownLatch permitCheck = new CountDownLatch(1);
+        CountDownLatch continueSend = new CountDownLatch(1);
+        AtomicInteger requests = new AtomicInteger();
+        LongSupplier clock = () -> 0L;
+        Runnable beforeExchange =
+                () -> {
+                    permitCheck.countDown();
+                    try {
+                        if (!continueSend.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("HTTP test exchange was not released");
+                        }
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError("HTTP test exchange interrupted", error);
+                    }
+                };
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    requests.incrementAndGet();
+                                    replyOk(exchange, "unexpected");
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.defaults(),
+                                clock,
+                                beforeExchange)) {
+            Future<CompletableFuture<Object>> invocation =
+                    caller.submit(() -> executor.executeAsync(List.of("PING")));
+            assertTrue(permitCheck.await(5, TimeUnit.SECONDS));
+            closeExecutor(executor);
+            continueSend.countDown();
+
+            CompletableFuture<Object> request = invocation.get(1, TimeUnit.SECONDS);
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> request.get(1, TimeUnit.SECONDS));
+            HttpTransportException closed =
+                    assertInstanceOf(HttpTransportException.class, failure.getCause());
+            assertEquals("client_closed", closed.errorCode());
+            assertEquals(RequestDelivery.NOT_SENT, closed.delivery());
+            assertFalse(closed.retryable());
+            assertEquals(0, requests.get());
+        } finally {
+            continueSend.countDown();
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void closeClassificationRemainsNotSentIfTheDeadlineExpiresDuringRejection() throws Exception {
+        CountDownLatch permitCheck = new CountDownLatch(1);
+        CountDownLatch continueSend = new CountDownLatch(1);
+        AtomicLong now = new AtomicLong();
+        AtomicInteger requests = new AtomicInteger();
+        LongSupplier clock = now::get;
+        Runnable beforeExchange =
+                () -> {
+                    permitCheck.countDown();
+                    try {
+                        if (!continueSend.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("HTTP test exchange was not released");
+                        }
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError("HTTP test exchange interrupted", error);
+                    }
+                };
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try (TestServer server =
+                        server(
+                                exchange -> {
+                                    requests.incrementAndGet();
+                                    replyOk(exchange, "unexpected");
+                                });
+                HttpExecutor executor =
+                        new HttpExecutor(
+                                server.url(),
+                                HttpTransportOptions.builder()
+                                        .requestTimeout(Duration.ofNanos(1))
+                                        .build(),
+                                clock,
+                                beforeExchange)) {
+            Future<CompletableFuture<Object>> invocation =
+                    caller.submit(() -> executor.executeAsync(List.of("PING")));
+            assertTrue(permitCheck.await(5, TimeUnit.SECONDS));
+            closeExecutor(executor);
+            now.set(2);
+            continueSend.countDown();
+
+            CompletableFuture<Object> request = invocation.get(1, TimeUnit.SECONDS);
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> request.get(1, TimeUnit.SECONDS));
+            HttpTransportException closed =
+                    assertInstanceOf(HttpTransportException.class, failure.getCause());
+            assertEquals("client_closed", closed.errorCode());
+            assertEquals(RequestDelivery.NOT_SENT, closed.delivery());
+            assertFalse(closed.retryable());
+            assertEquals(0, requests.get());
+        } finally {
+            continueSend.countDown();
+            caller.shutdownNow();
         }
     }
 
@@ -954,6 +1316,8 @@ final class HttpExecutorTest {
                     assertThrows(
                             HttpTransportException.class, () -> executor.execute(List.of("PING")));
             assertEquals("transport_timeout", timeout.errorCode());
+            assertEquals(RequestDelivery.UNKNOWN, timeout.delivery());
+            assertFalse(timeout.retryable());
             assertFalse(timeout.safeToRetry());
         }
 
@@ -1252,6 +1616,22 @@ final class HttpExecutorTest {
         exchange.close();
     }
 
+    private static void closeExecutor(HttpExecutor executor) {
+        executor.close();
+    }
+
+    private static void noOp() {
+        // The test controls the HTTP client directly.
+    }
+
+    @SuppressWarnings("PMD.AvoidAccessibilityAlteration")
+    private static void replaceHttpClient(HttpExecutor executor, HttpClient replacement)
+            throws ReflectiveOperationException {
+        Field client = HttpExecutor.class.getDeclaredField("client");
+        client.setAccessible(true);
+        client.set(executor, new AtomicReference<>(replacement));
+    }
+
     private static Map<String, String> bytesMarker(byte[] value) {
         return Map.of("$ferricstore_bytes", Base64.getEncoder().encodeToString(value));
     }
@@ -1325,6 +1705,123 @@ final class HttpExecutorTest {
         public void close() {
             server.stop(0);
             executor.shutdownNow();
+        }
+    }
+
+    private static final class RecordingHttpClient extends HttpClient {
+        private final List<String> events;
+        private final HttpExecutor executor;
+        private final boolean closeFromSubmission;
+        private final CountDownLatch submissionEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseSubmission = new CountDownLatch(1);
+        private final CountDownLatch submissionReturned = new CountDownLatch(1);
+        private final CountDownLatch closeReturned = new CountDownLatch(1);
+        private final AtomicReference<CompletableFuture<?>> submitted = new AtomicReference<>();
+
+        private RecordingHttpClient(List<String> events, HttpExecutor executor) {
+            this(events, executor, true);
+        }
+
+        private RecordingHttpClient(
+                List<String> events, HttpExecutor executor, boolean closeFromSubmission) {
+            this.events = events;
+            this.executor = executor;
+            this.closeFromSubmission = closeFromSubmission;
+        }
+
+        @Override
+        public Optional<CookieHandler> cookieHandler() {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<Duration> connectTimeout() {
+            return Optional.empty();
+        }
+
+        @Override
+        public Redirect followRedirects() {
+            return Redirect.NEVER;
+        }
+
+        @Override
+        public Optional<ProxySelector> proxy() {
+            return Optional.empty();
+        }
+
+        @Override
+        public javax.net.ssl.SSLContext sslContext() {
+            return null;
+        }
+
+        @Override
+        public javax.net.ssl.SSLParameters sslParameters() {
+            return new javax.net.ssl.SSLParameters();
+        }
+
+        @Override
+        public Optional<Authenticator> authenticator() {
+            return Optional.empty();
+        }
+
+        @Override
+        public Version version() {
+            return Version.HTTP_1_1;
+        }
+
+        @Override
+        public Optional<Executor> executor() {
+            return Optional.empty();
+        }
+
+        @Override
+        public <T> HttpResponse<T> send(
+                HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler)
+                throws IOException, InterruptedException {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+                HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
+            CompletableFuture<HttpResponse<T>> future = new CompletableFuture<>();
+            submitted.set(future);
+            submissionEntered.countDown();
+            if (closeFromSubmission) {
+                Thread closer =
+                        new Thread(
+                                () -> {
+                                    executor.close();
+                                    events.add("close-returned");
+                                    closeReturned.countDown();
+                                },
+                                "http-test-closer");
+                closer.start();
+                try {
+                    if (!releaseSubmission.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("HTTP submission was not released");
+                    }
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("HTTP submission was interrupted", error);
+                }
+            }
+            events.add("submission-returned");
+            submissionReturned.countDown();
+            return future;
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+                HttpRequest request,
+                HttpResponse.BodyHandler<T> responseBodyHandler,
+                HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
+            return sendAsync(request, responseBodyHandler);
+        }
+
+        @Override
+        public WebSocket.Builder newWebSocketBuilder() {
+            throw new UnsupportedOperationException();
         }
     }
 }

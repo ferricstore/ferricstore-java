@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 final class HttpIntegrationReleaseContractTest {
     private static final Path REPOSITORY = Path.of("..").toAbsolutePath().normalize();
     private static final String RELEASE_IMAGE =
-            "quay.io/ferricstore/ferricstore:0.11.20@sha256:"
-                    + "aeec52c27c3afb6e462f659c16b75898d9e9fd6833c8830194f7252ef4916e4f";
+            "quay.io/ferricstore/ferricstore:0.11.21@sha256:"
+                    + "d297c91414ecf206671685d6e74efcec715e5f14a96c5cef09ac5d8c4664c74b";
     private static final String INTEGRATION_TESTS =
             "-Dtest=FerricStoreIntegrationTest,FerricStoreRewindReasonIntegrationTest,"
                     + "FerricStoreCommandArgumentsIntegrationTest,"
@@ -147,7 +147,7 @@ final class HttpIntegrationReleaseContractTest {
         assertTrue(guard < deploy, "release tag guard must run before Maven Central deploy");
 
         String apiIndex = repositoryFile("docs/api/index.html");
-        assertTrue(apiIndex.contains("0.2.3 API"));
+        assertTrue(apiIndex.contains("0.2.4 API"));
         assertTrue(
                 Files.exists(
                         REPOSITORY.resolve("docs/api/com/ferricstore/DurableStepResult.html")));

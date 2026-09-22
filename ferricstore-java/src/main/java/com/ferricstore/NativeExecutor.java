@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -26,6 +27,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -71,14 +75,17 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private final Object writeLock = new Object();
     private final ExecutorService writeExecutor;
     private final ExecutorService reconnectExecutor;
+    private final ScheduledExecutorService retryExecutor;
     private final AtomicLong requestIds = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean draining = new AtomicBoolean();
     private final AtomicBoolean transportRetired = new AtomicBoolean();
+    private final AtomicReference<RuntimeException> terminationFailure = new AtomicReference<>();
     private final AtomicReference<CompletableFuture<NativeExecutor>> replacement =
             new AtomicReference<>();
     private final CountDownLatch dataWriteStarted = new CountDownLatch(1);
     private final ConcurrentHashMap<Long, PendingRequest> pending = new ConcurrentHashMap<>();
+    private final Set<RetryOperation> retryOperations = ConcurrentHashMap.newKeySet();
     private final NativeResponseAssembler assembler =
             new NativeResponseAssembler(
                     NativeProtocol.DEFAULT_MAX_RESPONSE_BYTES,
@@ -98,6 +105,7 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     private final AtomicReference<NegotiatedCapabilities> negotiatedCapabilities =
             new AtomicReference<>();
     private final AtomicBoolean authenticated = new AtomicBoolean();
+    private final Set<SessionOpening> sessionOpenings = new HashSet<>();
 
     private NativeExecutor(
             NativeEndpoint endpoint,
@@ -123,13 +131,24 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             LongSupplier nanoTime,
             Duration requestTimeout)
             throws IOException {
+        this(endpoint, transportOptions, dedicatedSession, nanoTime, requestTimeout, null);
+    }
+
+    private NativeExecutor(
+            NativeEndpoint endpoint,
+            NativeTransportOptions transportOptions,
+            boolean dedicatedSession,
+            LongSupplier nanoTime,
+            Duration requestTimeout,
+            SessionOpening opening)
+            throws IOException {
         this.endpoint = endpoint;
         this.transportOptions = transportOptions;
         this.pendingSlots = new Semaphore(transportOptions.maxPendingRequests());
         this.nanoTime = Objects.requireNonNull(nanoTime, "nano time");
         this.requestTimeout = requirePositiveTimeout(requestTimeout);
         this.dedicatedSession = dedicatedSession;
-        Socket connected = connectSocket(endpoint, transportOptions.sslContext());
+        Socket connected = connectSocket(endpoint, transportOptions.sslContext(), opening);
         this.socket = connected;
         try {
             this.input = connected.getInputStream();
@@ -144,8 +163,12 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         }
         this.writeExecutor = Executors.newSingleThreadExecutor(NativeExecutor::writerThread);
         this.reconnectExecutor = Executors.newSingleThreadExecutor(NativeExecutor::reconnectThread);
+        this.retryExecutor = retryExecutor();
         this.readerThread = new Thread(() -> readLoop(this.input), "ferricstore-native-reader");
         this.readerThread.setDaemon(true);
+        if (opening != null) {
+            opening.attachExecutor(this);
+        }
         this.readerThread.start();
     }
 
@@ -226,19 +249,80 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
     @Override
     public SessionCommandExecutor openSession() {
+        SessionOpening opening = beginSessionOpening();
+        NativeExecutor session = null;
+        boolean published = false;
         try {
-            NativeExecutor session =
-                    new NativeExecutor(endpoint, transportOptions, true, nanoTime, requestTimeout);
-            try {
-                session.initialize();
-                return session;
-            } catch (RuntimeException error) {
-                session.close();
-                throw error;
+            session =
+                    new NativeExecutor(
+                            endpoint, transportOptions, true, nanoTime, requestTimeout, opening);
+            session.initialize();
+            if (!publishSessionOpening(opening)) {
+                throw NativeProtocolException.notSent("native connection is closed");
             }
+            published = true;
+            return session;
         } catch (IOException error) {
+            if (closed.get() || opening.cancelled()) {
+                throw NativeProtocolException.notSent("native connection is closed", error);
+            }
             throw new NativeProtocolException(
                     "failed to open dedicated FerricStore native session", error);
+        } catch (RuntimeException error) {
+            if (closed.get() || opening.cancelled()) {
+                throw NativeProtocolException.notSent("native connection is closed", error);
+            }
+            throw error;
+        } finally {
+            if (!published) {
+                removeSessionOpening(opening);
+                if (session != null) {
+                    closeUnpublishedSession(session);
+                }
+            }
+        }
+    }
+
+    private static void closeUnpublishedSession(NativeExecutor session) {
+        if (!session.closed.get()) {
+            session.close();
+        }
+    }
+
+    private SessionOpening beginSessionOpening() {
+        synchronized (sessionOpenings) {
+            if (closed.get()) {
+                throw NativeProtocolException.notSent("native connection is closed");
+            }
+            SessionOpening opening = new SessionOpening();
+            sessionOpenings.add(opening);
+            return opening;
+        }
+    }
+
+    private boolean publishSessionOpening(SessionOpening opening) {
+        synchronized (sessionOpenings) {
+            if (closed.get() || opening.cancelled()) {
+                return false;
+            }
+            sessionOpenings.remove(opening);
+            return true;
+        }
+    }
+
+    private void removeSessionOpening(SessionOpening opening) {
+        synchronized (sessionOpenings) {
+            sessionOpenings.remove(opening);
+        }
+    }
+
+    private void cancelSessionOpenings() {
+        SessionOpening[] openings;
+        synchronized (sessionOpenings) {
+            openings = sessionOpenings.toArray(SessionOpening[]::new);
+        }
+        for (SessionOpening opening : openings) {
+            opening.cancel();
         }
     }
 
@@ -541,7 +625,15 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             return AsyncFutures.failed(notSent("invalid native request body", error));
         }
         CompletableFuture<Object> result = new CompletableFuture<>();
-        requestAttempt(opcode, laneId, body, flags, 0, deadlineNanos, result);
+        RetryOperation operation = new RetryOperation(result);
+        operation
+                .result()
+                .whenComplete(
+                        (ignored, failure) -> {
+                            operation.cancelScheduled();
+                            retryOperations.remove(operation);
+                        });
+        requestAttempt(opcode, laneId, body, flags, 0, deadlineNanos, operation);
         return result;
     }
 
@@ -552,17 +644,17 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             int flags,
             int retries,
             long deadlineNanos,
-            CompletableFuture<Object> result) {
+            RetryOperation operation) {
+        CompletableFuture<Object> result = operation.result();
         if (result.isDone()) {
             return;
         }
         if (deadlineExpired(deadlineNanos)) {
-            result.completeExceptionally(
-                    retries == 0 ? requestTimeoutBeforeSend() : requestTimeout());
+            result.completeExceptionally(requestTimeoutBeforeSend());
             return;
         }
         CompletableFuture<NativeResponseCodec.Response> attempt =
-                requestEncodedAsync(opcode, laneId, body, flags, deadlineNanos, retries > 0);
+                requestEncodedAsync(opcode, laneId, body, flags, deadlineNanos, false);
         result.whenComplete(
                 (ignored, failure) -> {
                     if (result.isCancelled()) {
@@ -582,14 +674,21 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                                 && !dedicatedSession
                                 && !deadlineExpired(deadlineNanos)) {
                             requestAttempt(
-                                    opcode, laneId, body, flags, retries, deadlineNanos, result);
+                                    opcode, laneId, body, flags, retries, deadlineNanos, operation);
                         } else {
                             result.completeExceptionally(error);
                         }
                         return;
                     }
                     completeAttempt(
-                            opcode, laneId, body, flags, retries, deadlineNanos, result, response);
+                            opcode,
+                            laneId,
+                            body,
+                            flags,
+                            retries,
+                            deadlineNanos,
+                            operation,
+                            response);
                 });
     }
 
@@ -600,8 +699,9 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             int flags,
             int retries,
             long deadlineNanos,
-            CompletableFuture<Object> result,
+            RetryOperation operation,
             NativeResponseCodec.Response response) {
+        CompletableFuture<Object> result = operation.result();
         try {
             Object value = NativeResponseCodec.requireOk(response);
             if (deadlineExpired(deadlineNanos)) {
@@ -625,8 +725,46 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             }
             long retryDelayNanos =
                     boundedRetryDelayNanos(NativeRetryPolicy.retryAfterMs(error), remainingNanos);
-            CompletableFuture.delayedExecutor(retryDelayNanos, TimeUnit.NANOSECONDS)
-                    .execute(
+            scheduleRetry(
+                    opcode,
+                    laneId,
+                    body,
+                    flags,
+                    retries,
+                    deadlineNanos,
+                    retryDelayNanos,
+                    operation);
+        } catch (RuntimeException error) {
+            result.completeExceptionally(error);
+        }
+    }
+
+    private void scheduleRetry(
+            int opcode,
+            long laneId,
+            byte[] body,
+            int flags,
+            int retries,
+            long deadlineNanos,
+            long retryDelayNanos,
+            RetryOperation operation) {
+        CompletableFuture<Object> result = operation.result();
+        synchronized (retryOperations) {
+            if (result.isDone()) {
+                return;
+            }
+            RuntimeException termination = terminationFailure.get();
+            if (closed.get() || termination != null) {
+                operation.cancel(
+                        termination == null
+                                ? new NativeProtocolException(
+                                        "native executor closed with requests in flight; outcome is unknown")
+                                : termination);
+                return;
+            }
+            retryOperations.add(operation);
+            RetryTask task =
+                    operation.addTask(
                             () ->
                                     requestAttempt(
                                             opcode,
@@ -635,9 +773,23 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                                             flags,
                                             retries + 1,
                                             deadlineNanos,
-                                            result));
-        } catch (RuntimeException error) {
-            result.completeExceptionally(error);
+                                            operation));
+            if (task == null) {
+                retryOperations.remove(operation);
+                return;
+            }
+            try {
+                ScheduledFuture<?> scheduled =
+                        retryExecutor.schedule(task, retryDelayNanos, TimeUnit.NANOSECONDS);
+                task.attach(scheduled);
+                if (result.isDone()) {
+                    retryOperations.remove(operation);
+                }
+            } catch (RejectedExecutionException rejected) {
+                retryOperations.remove(operation);
+                RuntimeException currentTermination = terminationFailure.get();
+                operation.cancel(currentTermination == null ? rejected : currentTermination);
+            }
         }
     }
 
@@ -1248,23 +1400,31 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
     }
 
     private void terminate(RuntimeException failure) {
-        if (closed.compareAndSet(false, true)) {
-            try {
-                socket.close();
-            } catch (IOException ignored) {
-                // The original protocol or transport failure remains authoritative.
-            }
-            writeExecutor.shutdownNow();
-            reconnectExecutor.shutdownNow();
-            CompletableFuture<NativeExecutor> pendingReplacement = replacement.get();
-            if (pendingReplacement != null) {
-                pendingReplacement.whenComplete(
-                        (next, replacementFailure) -> {
-                            if (next != null) {
-                                next.close();
-                            }
-                        });
-            }
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        terminationFailure.set(failure);
+        cancelSessionOpenings();
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // The original protocol or transport failure remains authoritative.
+        }
+        writeExecutor.shutdownNow();
+        reconnectExecutor.shutdownNow();
+        synchronized (retryOperations) {
+            retryExecutor.shutdownNow();
+            retryOperations.forEach(operation -> operation.cancel(failure));
+            retryOperations.clear();
+        }
+        CompletableFuture<NativeExecutor> pendingReplacement = replacement.get();
+        if (pendingReplacement != null) {
+            pendingReplacement.whenComplete(
+                    (next, replacementFailure) -> {
+                        if (next != null) {
+                            next.close();
+                        }
+                    });
         }
         assembler.clear();
         pending.forEach(
@@ -1432,6 +1592,19 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
         return thread;
     }
 
+    private static Thread retryThread(Runnable runnable) {
+        Thread thread = new Thread(runnable, "ferricstore-native-retry");
+        thread.setDaemon(true);
+        return thread;
+    }
+
+    private static ScheduledThreadPoolExecutor retryExecutor() {
+        ScheduledThreadPoolExecutor executor =
+                new ScheduledThreadPoolExecutor(1, NativeExecutor::retryThread);
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
+
     private enum PipelineResponseType {
         PIPELINE,
         FLOW_MANY
@@ -1447,48 +1620,110 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
 
     private record PreparedCommand(int opcode, long laneId, Object payload, int flags) {}
 
-    private static Socket connectSocket(NativeEndpoint endpoint, SSLContext sslContext)
+    private static Socket connectSocket(
+            NativeEndpoint endpoint, SSLContext sslContext, SessionOpening opening)
             throws IOException {
-        Socket raw = new Socket();
-        raw.setTcpNoDelay(true);
-        raw.connect(
-                new InetSocketAddress(endpoint.host(), endpoint.port()),
-                Math.toIntExact(CONNECT_TIMEOUT.toMillis()));
-        if (!endpoint.tls()) {
-            return raw;
-        }
+        return connectSocket(
+                endpoint,
+                sslContext,
+                opening,
+                new NativeSocketFactory() {
+                    @Override
+                    public Socket openRaw() {
+                        return new Socket();
+                    }
 
-        SSLContext context;
+                    @Override
+                    public Socket createTls(Socket raw, NativeEndpoint target, SSLContext context)
+                            throws IOException {
+                        return context.getSocketFactory()
+                                .createSocket(raw, target.host(), target.port(), true);
+                    }
+                });
+    }
+
+    static Socket connectSocketForTesting(
+            NativeEndpoint endpoint, SSLContext sslContext, NativeSocketFactory factory)
+            throws IOException {
+        return connectSocket(
+                endpoint, sslContext, null, Objects.requireNonNull(factory, "factory"));
+    }
+
+    private static Socket connectSocket(
+            NativeEndpoint endpoint,
+            SSLContext sslContext,
+            SessionOpening opening,
+            NativeSocketFactory factory)
+            throws IOException {
+        Socket raw = null;
+        Socket layered = null;
         try {
-            context = sslContext == null ? SSLContext.getDefault() : sslContext;
-        } catch (java.security.NoSuchAlgorithmException error) {
-            raw.close();
-            throw new IOException("default TLS context is unavailable", error);
-        }
-        Socket layered;
-        try {
-            layered =
-                    context.getSocketFactory()
-                            .createSocket(raw, endpoint.host(), endpoint.port(), true);
+            raw = factory.openRaw();
+            if (opening != null) {
+                opening.attachSocket(raw);
+            }
+            raw.setTcpNoDelay(true);
+            raw.connect(
+                    new InetSocketAddress(endpoint.host(), endpoint.port()),
+                    Math.toIntExact(CONNECT_TIMEOUT.toMillis()));
+            if (!endpoint.tls()) {
+                return raw;
+            }
+
+            SSLContext context;
+            try {
+                context = sslContext == null ? SSLContext.getDefault() : sslContext;
+            } catch (java.security.NoSuchAlgorithmException error) {
+                throw new IOException("default TLS context is unavailable", error);
+            }
+            layered = factory.createTls(raw, endpoint, context);
+            if (!(layered instanceof SSLSocket tls)) {
+                throw new IOException("TLS socket factory did not create an SSLSocket");
+            }
+            if (opening != null) {
+                opening.attachSocket(layered);
+            }
+            SSLParameters parameters = tls.getSSLParameters();
+            parameters.setEndpointIdentificationAlgorithm("HTTPS");
+            tls.setSSLParameters(parameters);
+            tls.setSoTimeout(Math.toIntExact(REQUEST_TIMEOUT.toMillis()));
+            tls.startHandshake();
+            tls.setSoTimeout(0);
+            return tls;
         } catch (IOException | RuntimeException error) {
+            closeSocket(layered, raw, error);
+            throw error;
+        }
+    }
+
+    @SuppressWarnings("PMD.CompareObjectsWithEquals")
+    private static void closeSocket(Socket layered, Socket raw, Throwable failure) {
+        // Resource aliasing is based on object identity, not socket value equality.
+        if (layered != null) {
+            try {
+                layered.close();
+            } catch (IOException closeError) {
+                if (closeError != failure) {
+                    failure.addSuppressed(closeError);
+                }
+            }
+        }
+        if (raw != null && raw != layered) {
             try {
                 raw.close();
             } catch (IOException closeError) {
-                error.addSuppressed(closeError);
+                if (closeError != failure) {
+                    failure.addSuppressed(closeError);
+                }
             }
-            throw error;
         }
-        if (!(layered instanceof SSLSocket tls)) {
-            layered.close();
-            throw new IOException("TLS socket factory did not create an SSLSocket");
-        }
-        SSLParameters parameters = tls.getSSLParameters();
-        parameters.setEndpointIdentificationAlgorithm("HTTPS");
-        tls.setSSLParameters(parameters);
-        tls.setSoTimeout(Math.toIntExact(REQUEST_TIMEOUT.toMillis()));
-        tls.startHandshake();
-        tls.setSoTimeout(0);
-        return tls;
+    }
+
+    interface NativeSocketFactory {
+        Socket openRaw() throws IOException;
+
+        Socket createTls(Socket raw, NativeEndpoint endpoint, SSLContext context)
+                throws IOException;
     }
 
     private record PendingRequest(
@@ -1500,6 +1735,141 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
             boolean priorAttemptSent,
             Socket connection,
             OutputStream output) {}
+
+    private static final class RetryOperation {
+        private final CompletableFuture<Object> result;
+        private final Set<RetryTask> scheduled = new HashSet<>();
+
+        private RetryOperation(CompletableFuture<Object> result) {
+            this.result = result;
+        }
+
+        private CompletableFuture<Object> result() {
+            return result;
+        }
+
+        private RetryTask addTask(Runnable action) {
+            synchronized (this) {
+                if (result.isDone()) {
+                    return null;
+                }
+                RetryTask task = new RetryTask(this, action);
+                scheduled.add(task);
+                return task;
+            }
+        }
+
+        private boolean start(RetryTask task) {
+            synchronized (this) {
+                return !result.isDone() && scheduled.remove(task);
+            }
+        }
+
+        private void remove(RetryTask task) {
+            synchronized (this) {
+                scheduled.remove(task);
+            }
+        }
+
+        private void cancelScheduled() {
+            List<RetryTask> current;
+            synchronized (this) {
+                current = new ArrayList<>(scheduled);
+                scheduled.clear();
+            }
+            current.forEach(RetryTask::cancel);
+        }
+
+        private void cancel(RuntimeException failure) {
+            result.completeExceptionally(failure);
+            cancelScheduled();
+        }
+    }
+
+    private static final class RetryTask implements Runnable {
+        private final RetryOperation operation;
+        private final Runnable action;
+        private final AtomicReference<ScheduledFuture<?>> future = new AtomicReference<>();
+        private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+
+        private RetryTask(RetryOperation operation, Runnable action) {
+            this.operation = operation;
+            this.action = action;
+        }
+
+        @Override
+        public void run() {
+            if (!started.compareAndSet(false, true) || !operation.start(this)) {
+                return;
+            }
+            action.run();
+        }
+
+        private void attach(ScheduledFuture<?> current) {
+            future.set(current);
+            if (cancelled.get() || started.get() || operation.result().isDone()) {
+                current.cancel(false);
+                operation.remove(this);
+            }
+        }
+
+        private void cancel() {
+            cancelled.set(true);
+            ScheduledFuture<?> current = future.get();
+            if (current != null) {
+                current.cancel(false);
+            }
+            operation.remove(this);
+        }
+    }
+
+    // Cancellation may race with attachment; cleanup is eventual rather than a blocking barrier.
+    private static final class SessionOpening {
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+        private final AtomicReference<Socket> socket = new AtomicReference<>();
+        private final AtomicReference<NativeExecutor> executor = new AtomicReference<>();
+
+        private void attachSocket(Socket current) {
+            socket.set(current);
+            if (cancelled.get()) {
+                closeSocket(current);
+            }
+        }
+
+        private void attachExecutor(NativeExecutor current) {
+            executor.set(current);
+            if (cancelled.get()) {
+                current.close();
+            }
+        }
+
+        private boolean cancelled() {
+            return cancelled.get();
+        }
+
+        private void cancel() {
+            if (!cancelled.compareAndSet(false, true)) {
+                return;
+            }
+            closeSocket(socket.get());
+            NativeExecutor current = executor.get();
+            if (current != null) {
+                current.close();
+            }
+        }
+
+        private static void closeSocket(Socket current) {
+            if (current == null) {
+                return;
+            }
+            try {
+                current.close();
+            } catch (IOException ignored) {
+                // Session opening is already being cancelled.
+            }
+        }
+    }
 
     private static final class GoAwaySignal extends RuntimeException {
         private static final long serialVersionUID = 1L;
