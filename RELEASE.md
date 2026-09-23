@@ -19,12 +19,16 @@ Releases are published to Maven Central from GitHub Actions when a version tag i
 1. Update the Maven project version.
 2. Move the changelog section from `Unreleased` to the release date.
 3. Commit the release change.
-4. Create a signed tag:
+4. Create an unsigned annotated tag:
 
    ```bash
-   git tag -s v0.2.4 -m "v0.2.4"
-   git push origin main --tags
+   git tag -a v0.2.4 -m "Java SDK 0.2.4"
+   git push origin v0.2.4
    ```
+
+   The tag intentionally does not carry a GPG signature. GitHub Actions signs
+   the Maven artifacts during the `maven-central` job using the repository
+   `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` secrets before uploading them.
 
 5. GitHub Actions runs the quality gates and uploads one Central deployment.
 6. The workflow polls that deployment ID until Central reports `PUBLISHED`.
