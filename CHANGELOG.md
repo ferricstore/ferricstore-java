@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Refresh current-server integration and documentation pins to the immutable
-  FerricStore OSS 0.11.23 image. The published SDK version remains unchanged.
+  FerricStore OSS 0.11.24 image. The published SDK version remains unchanged.
 
 ## 0.2.4 - 2026-09-22
 
