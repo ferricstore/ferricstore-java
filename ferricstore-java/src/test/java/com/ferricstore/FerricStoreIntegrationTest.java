@@ -25,6 +25,8 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
 final class FerricStoreIntegrationTest {
+    private static final long QUERY_TIMEOUT_MS = 5_000;
+
     @Test
     void homogeneousFlowCreatePipelinePreservesAbsentAndBinaryPayloads() {
         assumeIntegration();
@@ -1500,31 +1502,15 @@ final class FerricStoreIntegrationTest {
     private static void assertEventuallyContains(
             Supplier<List<FlowRecord>> records, String expectedId) {
         assertTrue(
-                awaitQuery(records).stream().anyMatch(record -> record.id().equals(expectedId)),
+                FlowQueryAwait.containing(records, expectedId, QUERY_TIMEOUT_MS).stream()
+                        .anyMatch(record -> record.id().equals(expectedId)),
                 () -> "query did not expose expected Flow " + expectedId);
     }
 
     private static void assertEventuallyNotEmpty(Supplier<List<FlowRecord>> records) {
-        assertFalse(awaitQuery(records).isEmpty(), "query did not expose any matching Flows");
-    }
-
-    private static List<FlowRecord> awaitQuery(Supplier<List<FlowRecord>> records) {
-        long deadline = System.nanoTime() + 5_000_000_000L;
-        List<FlowRecord> current;
-        do {
-            current = records.get();
-            if (!current.isEmpty()) {
-                return current;
-            }
-            try {
-                Thread.sleep(25);
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
-                throw new AssertionError(
-                        "interrupted while waiting for Flow query projection", error);
-            }
-        } while (System.nanoTime() < deadline);
-        return current;
+        assertFalse(
+                FlowQueryAwait.nonEmpty(records, QUERY_TIMEOUT_MS).isEmpty(),
+                "query did not expose any matching Flows");
     }
 
     private static List<ClaimedItem> claimMany(
