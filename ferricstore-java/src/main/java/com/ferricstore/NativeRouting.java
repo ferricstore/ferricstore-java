@@ -13,6 +13,9 @@ final class NativeRouting {
                     "FLOW.FAIL_MANY",
                     "FLOW.CANCEL_MANY");
 
+    // `timeout numkeys key [key ...] [options]`: neither the timeout nor the count is a key.
+    private static final Set<String> TIMEOUT_COUNTED_KEY_COMMANDS = Set.of("BLMPOP", "BZMPOP");
+
     // `numkeys key [key ...] [options]`: the count is not a key.
     private static final Set<String> COUNTED_KEY_COMMANDS =
             Set.of("SINTERCARD", "ZUNION", "ZINTER", "ZDIFF", "ZINTERCARD", "ZMPOP");
@@ -38,6 +41,9 @@ final class NativeRouting {
         }
         if (COUNTED_KEY_COMMANDS.contains(name) && command.size() > 2) {
             return command.get(2);
+        }
+        if (TIMEOUT_COUNTED_KEY_COMMANDS.contains(name) && command.size() > 3) {
+            return command.get(3);
         }
         if (name.startsWith("FLOW.EFFECT.")) {
             for (int index = 2; index + 1 < command.size(); index++) {
