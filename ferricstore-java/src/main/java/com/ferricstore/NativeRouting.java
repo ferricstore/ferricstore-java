@@ -15,7 +15,7 @@ final class NativeRouting {
 
     // `numkeys key [key ...] [options]`: the count is not a key.
     private static final Set<String> COUNTED_KEY_COMMANDS =
-            Set.of("SINTERCARD", "ZUNION", "ZINTER", "ZDIFF", "ZINTERCARD");
+            Set.of("SINTERCARD", "ZUNION", "ZINTER", "ZDIFF", "ZINTERCARD", "ZMPOP");
 
     private NativeRouting() {}
 
