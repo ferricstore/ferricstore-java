@@ -23,6 +23,17 @@ final class NativeRoutingTest {
     }
 
     @Test
+    void routesNumkeysCommandsByTheirFirstKeyInsteadOfTheCount() {
+        assertEquals("a", NativeRouting.routeKey(List.of("ZUNION", 2, "a", "b", "WITHSCORES")));
+        assertEquals("a", NativeRouting.routeKey(List.of("ZINTER", "2", "a", "b")));
+        assertEquals("a", NativeRouting.routeKey(List.of("ZDIFF", 2, "a", "b")));
+        assertEquals("a", NativeRouting.routeKey(List.of("ZINTERCARD", 2, "a", "b", "LIMIT", 1)));
+        assertEquals("a", NativeRouting.routeKey(List.of("SINTERCARD", 2, "a", "b")));
+        assertEquals("dest", NativeRouting.routeKey(List.of("ZUNIONSTORE", "dest", 2, "a", "b")));
+        assertEquals("dest", NativeRouting.routeKey(List.of("ZRANGESTORE", "dest", "src", 0, -1)));
+    }
+
+    @Test
     void routesManyMutationsByTheirFirstFlowInsteadOfTheMixedSentinel() {
         assertEquals(
                 "flow-a",

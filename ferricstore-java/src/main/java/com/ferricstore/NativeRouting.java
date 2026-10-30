@@ -13,6 +13,10 @@ final class NativeRouting {
                     "FLOW.FAIL_MANY",
                     "FLOW.CANCEL_MANY");
 
+    // `numkeys key [key ...] [options]`: the count is not a key.
+    private static final Set<String> COUNTED_KEY_COMMANDS =
+            Set.of("SINTERCARD", "ZUNION", "ZINTER", "ZDIFF", "ZINTERCARD");
+
     private NativeRouting() {}
 
     static Object routeKey(List<Object> command) {
@@ -31,6 +35,9 @@ final class NativeRouting {
             if (firstFlow != null) {
                 return firstFlow;
             }
+        }
+        if (COUNTED_KEY_COMMANDS.contains(name) && command.size() > 2) {
+            return command.get(2);
         }
         if (name.startsWith("FLOW.EFFECT.")) {
             for (int index = 2; index + 1 < command.size(); index++) {
