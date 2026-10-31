@@ -400,6 +400,35 @@ final class FerricStoreIntegrationTest {
     }
 
     @Test
+    void shardChannelsAreANamespaceApartFromOrdinaryChannels() {
+        assumeIntegration();
+        assumeTrue(!isHttpIntegration(), "subscriptions require native TCP/TLS");
+
+        try (FerricStoreClient client = connectRaw()) {
+            String channel = "java-sdk:shard:" + suffix();
+            try (FerricStorePubSub pubsub = client.pubsubSession()) {
+                try {
+                    pubsub.ssubscribe(channel);
+                } catch (FerricStoreException error) {
+                    String message = String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT);
+                    assumeTrue(!message.contains("unknown command"), "server has no SSUBSCRIBE");
+                    throw error;
+                }
+                // PUBLISH never reaches a shard subscriber, so the first message is SPUBLISH's.
+                client.publish(channel, "plain");
+                assertEquals(1, client.spublish(channel, "shard"));
+                PubSubMessage message = pubsub.getMessage(Duration.ofSeconds(5));
+                assertNotNull(message);
+                assertEquals("smessage", message.kind());
+                assertEquals(channel, message.channel());
+                assertEquals("shard", text(message.message()));
+                pubsub.sunsubscribe(channel);
+                assertEquals(0, client.spublish(channel, "gone"));
+            }
+        }
+    }
+
+    @Test
     void everyCataloguedFlowCommandIsRecognizedByTheSelectedTransport() {
         assumeIntegration();
 

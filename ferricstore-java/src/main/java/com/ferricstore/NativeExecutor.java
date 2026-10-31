@@ -64,7 +64,9 @@ public final class NativeExecutor implements SessionCommandExecutor, SessionExec
                     "QUIT",
                     "RESET",
                     "SELECT",
+                    "SSUBSCRIBE",
                     "SUBSCRIBE",
+                    "SUNSUBSCRIBE",
                     "UNSUBSCRIBE",
                     "UNWATCH",
                     "WATCH");

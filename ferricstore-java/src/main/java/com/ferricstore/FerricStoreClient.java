@@ -577,6 +577,12 @@ public final class FerricStoreClient implements AutoCloseable {
         return Resp.number(command("PUBLISH", channel, codec.encode(message)));
     }
 
+    /** Publishes to a shard channel (SPUBLISH), a namespace apart from {@link #publish}'s. */
+    public long spublish(String channel, Object message) {
+        FlowValidation.requireText(channel, "channel");
+        return Resp.number(command("SPUBLISH", channel, codec.encode(message)));
+    }
+
     public Object pubsub(String subcommand, Object... arguments) {
         List<Object> command = args("PUBSUB", subcommand);
         command.addAll(List.of(arguments));
