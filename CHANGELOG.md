@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add sharded Pub/Sub: `FerricStorePubSub.ssubscribe` and `sunsubscribe`, and
+  `FerricStoreClient.spublish`. Shard messages arrive with kind `smessage`.
+  Closing a session that used SSUBSCRIBE also leaves its shard channels; other
+  sessions close as before, so older servers are unaffected.
 - Refresh current-server integration and documentation pins to the immutable
   FerricStore OSS 0.11.24 image. The published SDK version remains unchanged.
 
