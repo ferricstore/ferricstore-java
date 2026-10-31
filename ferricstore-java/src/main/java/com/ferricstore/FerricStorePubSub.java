@@ -39,8 +39,8 @@ public final class FerricStorePubSub implements AutoCloseable {
     }
 
     /**
-     * Subscribes to shard channels (SSUBSCRIBE), a namespace apart from {@link #subscribe}'s:
-     * only SPUBLISH reaches them, and their messages arrive with kind {@code smessage}.
+     * Subscribes to shard channels (SSUBSCRIBE), a namespace apart from {@link #subscribe}'s: only
+     * SPUBLISH reaches them, and their messages arrive with kind {@code smessage}.
      */
     public Object ssubscribe(String... channels) {
         if (channels.length > 0) {
