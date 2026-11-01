@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-01
+
+- Route ZUNION, ZINTER, ZDIFF, ZINTERCARD and the other numkeys commands, ZMPOP,
+  BLMPOP and BZMPOP by their first key instead of the count or timeout, for the
+  sorted-set commands FerricStore 0.12.16 added.
 - Add sharded Pub/Sub: `FerricStorePubSub.ssubscribe` and `sunsubscribe`, and
   `FerricStoreClient.spublish`. Shard messages arrive with kind `smessage`.
   Closing a session that used SSUBSCRIBE also leaves its shard channels; other
