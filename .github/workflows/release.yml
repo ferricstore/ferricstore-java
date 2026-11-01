@@ -24,7 +24,7 @@ jobs:
       FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.12.17@sha256:5ac7baa9ac4c4c5ecbdf2af8e643b8cac0de5497b2d6bf3aa452597dc8f39df6
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ matrix.java-version }}
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
