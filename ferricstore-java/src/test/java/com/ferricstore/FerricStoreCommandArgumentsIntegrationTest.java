@@ -223,7 +223,8 @@ final class FerricStoreCommandArgumentsIntegrationTest {
                                         zsetKey,
                                         List.of(new ZAddMember(9, "a")),
                                         ZAddOptions.builder().nx(true).build())));
-                assertEquals("1.0", zset.zscore(zsetKey, "a"));
+                // Servers before 0.12 answer "1.0"; 0.12 answers "1", as Redis does.
+                assertEquals(1.0, Double.parseDouble(zset.zscore(zsetKey, "a")));
                 assertEquals(
                         1,
                         number(

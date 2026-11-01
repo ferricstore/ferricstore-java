@@ -7,7 +7,8 @@
   Closing a session that used SSUBSCRIBE also leaves its shard channels; other
   sessions close as before, so older servers are unaffected.
 - Refresh current-server integration and documentation pins to the immutable
-  FerricStore OSS 0.11.24 image. The published SDK version remains unchanged.
+  FerricStore OSS 0.12.17 image (from 0.11.24), so CI runs the sharded Pub/Sub
+  integration test instead of skipping it.
 
 ## 0.2.4 - 2026-09-22
 
