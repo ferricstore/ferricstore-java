@@ -17,6 +17,7 @@ jobs:
       - run: scripts/test-extract-central-deployment-id.sh
       - run: scripts/test-wait-for-central-publish.sh
       - run: scripts/test-verify-maven-central-release.sh
+      - run: scripts/test-verify-release-bundle.sh
 
   unit:
     name: unit java-${{ matrix.java-version }}
@@ -57,11 +58,16 @@ jobs:
           java-version: 17
           cache: maven
       - run: mvn -B clean
+      # Builds the same Central bundle a release uploads, with the runner's
+      # Maven, and checks it here instead of letting Central reject the release.
       - run: >-
-          mvn -B -Prelease -Dgpg.skip=true
+          mvn -B -Prelease -Dgpg.skip=true -DskipUpload=true
           -pl ferricstore-java,ferricstore-spring-statemachine,ferricstore-spring-boot-starter
-          -am package
+          -am deploy
       - run: scripts/verify-release-layout.sh
+      - run: scripts/verify-release-bundle.sh
+        env:
+          RELEASE_BUNDLE_UNSIGNED: "1"
 
   integration:
     name: native TCP command and concurrency integration java-${{ matrix.java-version }}

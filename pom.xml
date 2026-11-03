@@ -6,7 +6,7 @@
 
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java-parent</artifactId>
-  <version>0.3.0</version>
+  <version>0.3.1</version>
   <packaging>pom</packaging>
 
   <name>FerricStore Java SDK Parent</name>
@@ -39,7 +39,7 @@
     <connection>scm:git:git://github.com/ferricstore/ferricstore-java.git</connection>
     <developerConnection>scm:git:ssh://github.com/ferricstore/ferricstore-java.git</developerConnection>
     <url>https://github.com/ferricstore/ferricstore-java</url>
-    <tag>v0.3.0</tag>
+    <tag>v0.3.1</tag>
   </scm>
 
   <properties>
@@ -225,7 +225,7 @@
         <plugin>
           <groupId>org.sonatype.central</groupId>
           <artifactId>central-publishing-maven-plugin</artifactId>
-          <version>0.11.0</version>
+          <version>0.12.0</version>
           <extensions>true</extensions>
           <configuration>
             <publishingServerId>central</publishingServerId>

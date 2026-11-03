@@ -2,7 +2,19 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-11-04
+
+- Publish with central-publishing-maven-plugin 0.12.0. GitHub's runners moved
+  to Maven 3.10, which leaves local-repository files (`maven-metadata-local.xml`,
+  `_remote.repositories`) in the Central bundle; 0.11.0 did not remove them, and
+  Central rejected the 0.3.0 upload for them, so 0.3.0 never reached Maven
+  Central. The bundle check now rejects any file that is not a versioned
+  artifact file, and pull requests build and check the same bundle.
+
 ## 0.3.0 - 2026-11-01
+
+Tagged but not published: Maven Central rejected the bundle (see 0.3.1), so
+these changes first ship in 0.3.1.
 
 - Route ZUNION, ZINTER, ZDIFF, ZINTERCARD and the other numkeys commands, ZMPOP,
   BLMPOP and BZMPOP by their first key instead of the count or timeout, for the
