@@ -2,6 +2,11 @@
 set -euo pipefail
 
 bundle_path="${1:-target/central-publishing/central-bundle.zip}"
+# Pull-request dry runs build the bundle without a signing key.
+require_signatures=true
+if [[ "${RELEASE_BUNDLE_UNSIGNED:-}" == 1 ]]; then
+  require_signatures=false
+fi
 expected_group_path="io/github/ferricstore"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "${script_dir}/verify-release-tag.sh"
@@ -39,6 +44,24 @@ if [[ -n "${unexpected_entries}" ]]; then
   exit 1
 fi
 
+# Central rejects the whole deployment for any file that is not one of a
+# component's own versioned files, such as the maven-metadata-local.xml that
+# Maven 3.10 leaves beside each artifact.
+misplaced_entries="$(
+  while IFS= read -r entry; do
+    artifact="$(cut -d/ -f4 <<<"${entry}")"
+    prefix="${expected_group_path}/${artifact}/${expected_version}/${artifact}-${expected_version}"
+    if [[ -z "${artifact}" || "${entry}" != "${prefix}"* || "${entry#"${prefix}"}" == */* ]]; then
+      printf '%s\n' "${entry}"
+    fi
+  done <<<"${bundle_entries}"
+)"
+if [[ -n "${misplaced_entries}" ]]; then
+  echo "Release bundle contains files that are not versioned artifact files:" >&2
+  echo "${misplaced_entries}" >&2
+  exit 1
+fi
+
 actual_artifacts="$(
   awk -F/ 'NF >= 5 { print $4 }' <<<"${bundle_entries}" | sort -u
 )"
@@ -58,7 +81,7 @@ for artifact in "${expected_artifacts[@]}"; do
     echo "Release bundle is missing ${pom_entry}" >&2
     exit 1
   fi
-  if ! grep -qx "${pom_entry}.asc" <<<"${bundle_entries}"; then
+  if [[ "${require_signatures}" == true ]] && ! grep -qx "${pom_entry}.asc" <<<"${bundle_entries}"; then
     echo "Release bundle is missing ${pom_entry}.asc" >&2
     exit 1
   fi
@@ -71,7 +94,7 @@ for artifact in "${expected_artifacts[@]:1}"; do
       echo "Release bundle is missing ${artifact_prefix}${suffix}" >&2
       exit 1
     fi
-    if ! grep -qx "${artifact_prefix}${suffix}.asc" <<<"${bundle_entries}"; then
+    if [[ "${require_signatures}" == true ]] && ! grep -qx "${artifact_prefix}${suffix}.asc" <<<"${bundle_entries}"; then
       echo "Release bundle is missing ${artifact_prefix}${suffix}.asc" >&2
       exit 1
     fi
