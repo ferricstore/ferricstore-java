@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-## 0.3.1 - 2026-11-04
+## 0.3.1 - 2026-11-07
+
+- Test against the immutable FerricStore OSS 0.12.18 image (from 0.12.17).
+  The 0.11.4 compatibility floor remains unchanged.
 
 - Publish with central-publishing-maven-plugin 0.12.0. GitHub's runners moved
   to Maven 3.10, which leaves local-repository files (`maven-metadata-local.xml`,
