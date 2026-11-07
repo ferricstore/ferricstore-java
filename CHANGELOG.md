@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Test against the immutable FerricStore OSS 0.12.18 image (from 0.12.17).
+  The 0.11.4 compatibility floor remains unchanged.
+
 ## 0.3.1 - 2026-11-04
 
 - Publish with central-publishing-maven-plugin 0.12.0. GitHub's runners moved
