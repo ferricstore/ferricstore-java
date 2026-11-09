@@ -1234,6 +1234,31 @@ public final class FerricStoreClient implements AutoCloseable {
     }
 
     public Object spawnChildren(SpawnChildrenOptions options) {
+        return command(spawnChildrenCommand(options));
+    }
+
+    CompletableFuture<Object> spawnChildrenAsyncForWorker(SpawnChildrenOptions options) {
+        return commandAsync(spawnChildrenCommand(options));
+    }
+
+    /**
+     * Reads one of a parent's child groups: each child's status and its decoded result or error,
+     * ordered by child id. Returns null when the parent or the group does not exist.
+     */
+    public ChildGroupResults childResults(
+            String parentFlowId, String partitionKey, String groupId) {
+        return childResults(parentFlowId, partitionKey, groupId, null);
+    }
+
+    public ChildGroupResults childResults(
+            String parentFlowId, String partitionKey, String groupId, Long maxBytes) {
+        List<Object> cmd = args("FLOW.GET", parentFlowId);
+        append(cmd, "PARTITION", partitionKey);
+        Object parent = command(cmd);
+        return ChildGroupReader.read(this, parent, groupId == null ? "default" : groupId, maxBytes);
+    }
+
+    private List<Object> spawnChildrenCommand(SpawnChildrenOptions options) {
         List<Object> cmd =
                 args(
                         "FLOW.SPAWN_CHILDREN",
@@ -1302,7 +1327,7 @@ public final class FerricStoreClient implements AutoCloseable {
                 cmd.add(codec.encode(child.payload()));
             }
         }
-        return command(cmd);
+        return cmd;
     }
 
     public Object installPolicy(String type, FlowPolicyOptions options) {

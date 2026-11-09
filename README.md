@@ -300,8 +300,42 @@ Handlers return explicit outcomes:
 - `Outcomes.complete(result)`
 - `Outcomes.retry(error)`
 - `Outcomes.fail(error)`
+- `Outcomes.waitForChildren(children, waitState, success, failure)` (see below)
 
 FerricFlow does not replay Java handler code. Workers claim durable state, run normal Java code, then write the next state through the FerricFlow API.
+
+### Fan-out and fan-in
+
+A handler returns `waitForChildren` to create child Flows and park the parent
+in one fenced command. The parent waits in `waitState` without a lease or a
+worker. FerricStore moves it to `success` once the group resolves, or to
+`failure` at the first failed child (unless `onChildFailed` is `"ignore"`).
+The handler for the success state reads every child's status and result with
+`ctx.childResults(groupId)`:
+
+```java
+image.state("received", ctx -> WaitForChildrenOutcome.builder(
+        List.of(
+            new ChildSpec(ctx.id() + ":small", "resize", Map.of("size", "small")),
+            new ChildSpec(ctx.id() + ":large", "resize", Map.of("size", "large"))),
+        "waiting_for_resizes", "resized", "resize_failed")
+    .groupId("resizes")
+    .build());
+
+image.state("resized", ctx -> {
+    ChildGroupResults resizes = ctx.childResults("resizes");
+    List<?> results = resizes.children().stream().map(ChildResult::result).toList();
+    return Outcomes.complete(Map.of("resizes", results));
+});
+```
+
+Return `waitForChildren` rather than calling `spawnChildren` and then
+transitioning: a fast child can finish before the transition commits.
+`waitMode` is `"all"` (the default) or `"any"`. Children are ordered by id, and
+each one's `status` is `running`, `completed`, `failed`, or `cancelled`.
+`client.childResults(parentId, partitionKey, groupId)` reads a group from
+outside a handler and returns null when it does not exist. Fan-in needs
+FerricStore 0.11.19 or newer. `FanoutExample` is the complete program.
 
 ## Spring Statemachine Adapter
 

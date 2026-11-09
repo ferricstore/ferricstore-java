@@ -1,4 +1,8 @@
 package com.ferricstore;
 
 public sealed interface Outcome
-        permits TransitionOutcome, CompleteOutcome, RetryOutcome, FailOutcome {}
+        permits TransitionOutcome,
+                CompleteOutcome,
+                RetryOutcome,
+                FailOutcome,
+                WaitForChildrenOutcome {}

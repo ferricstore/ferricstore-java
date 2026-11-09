@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add `WaitForChildrenOutcome` (`Outcomes.waitForChildren` and
+  `WaitForChildrenOutcome.builder`), which creates child Flows and parks the
+  parent in one fenced command, from sync and async handlers. Add
+  `FerricStoreClient.childResults` and `WorkflowContext.childResults`, which
+  read a child group's statuses and every child's result or error in one value
+  read. Fan-in needs FerricStore 0.11.19 or newer.
+- `FanoutExample` waits for its children and reads their results. It used to
+  spawn them and then transition the parent itself, which a fast child could
+  race and which left the parent without the wait states FerricStore requires.
+  CI now runs it against the server.
+
 - Test against the immutable FerricStore OSS 0.12.19 image (from 0.12.18).
   The 0.11.4 compatibility floor remains unchanged.
 
