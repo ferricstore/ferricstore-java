@@ -1,5 +1,7 @@
 package com.ferricstore;
 
+import java.util.List;
+
 public final class Outcomes {
     private Outcomes() {}
 
@@ -21,5 +23,14 @@ public final class Outcomes {
 
     public static FailOutcome fail(Object error) {
         return new FailOutcome(error, null, null);
+    }
+
+    /**
+     * Creates the children and parks the parent in {@code waitState} until all of them finish. Use
+     * {@link WaitForChildrenOutcome#builder} for a group id, {@code "any"}, or failure policies.
+     */
+    public static WaitForChildrenOutcome waitForChildren(
+            List<ChildSpec> children, String waitState, String success, String failure) {
+        return WaitForChildrenOutcome.builder(children, waitState, success, failure).build();
     }
 }

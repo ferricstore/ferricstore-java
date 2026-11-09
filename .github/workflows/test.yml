@@ -86,8 +86,9 @@ jobs:
       - run: docker compose up -d ferricstore
       - run: scripts/wait-for-ferricstore.sh
       - run: >-
-          mvn -B -pl ferricstore-java -am
-          -Dtest=FerricStoreIntegrationTest,FerricStoreRewindReasonIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest test
+          mvn -B -pl ferricstore-java,ferricstore-examples -am
+          -Dtest=FerricStoreIntegrationTest,FerricStoreRewindReasonIntegrationTest,FerricStoreCommandArgumentsIntegrationTest,FerricStoreFlowArgumentsIntegrationTest,FerricStoreConcurrencyIntegrationTest,DurableStepRecoveryIntegrationTest,FanoutExampleIntegrationTest
+          -Dsurefire.failIfNoSpecifiedTests=false test
         env:
           FERRICSTORE_INTEGRATION: "1"
       - if: always()

@@ -559,6 +559,9 @@ public final class WorkflowWorker {
                             .payload(retry.payload())
                             .build());
         }
+        if (outcome instanceof WaitForChildrenOutcome wait) {
+            return client.spawnChildrenAsyncForWorker(wait.spawnOptions(current));
+        }
         if (outcome instanceof FailOutcome fail) {
             return client.failAsyncForWorker(
                     FailOptions.builder(current.id(), current.leaseToken(), current.fencingToken())
@@ -653,6 +656,8 @@ public final class WorkflowWorker {
                             .error(retry.error())
                             .payload(retry.payload())
                             .build());
+        } else if (outcome instanceof WaitForChildrenOutcome wait) {
+            client.spawnChildren(wait.spawnOptions(current));
         } else if (outcome instanceof FailOutcome fail) {
             client.fail(
                     FailOptions.builder(current.id(), current.leaseToken(), current.fencingToken())
