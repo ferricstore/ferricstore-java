@@ -6,6 +6,8 @@
     <Or>
       <Class name="~com\.ferricstore\..*Options" />
       <Class name="com.ferricstore.ChildSpec" />
+      <Class name="com.ferricstore.ChildGroupResults" />
+      <Class name="com.ferricstore.WaitForChildrenOutcome" />
       <Class name="com.ferricstore.CreateItem" />
       <Class name="com.ferricstore.FlowRecord" />
       <Class name="com.ferricstore.ClaimedItem" />

@@ -34,7 +34,7 @@ final class ChildGroupReader {
                     "FLOW.GET child group returned unknown wait " + waitMode);
         }
         String resolved = Resp.optionalString(group.get("resolved"));
-        if (resolved != null && !resolved.equals("success") && !resolved.equals("failure")) {
+        if (resolved != null && !"success".equals(resolved) && !"failure".equals(resolved)) {
             throw new FerricStoreException(
                     "FLOW.GET child group returned unknown resolution " + resolved);
         }

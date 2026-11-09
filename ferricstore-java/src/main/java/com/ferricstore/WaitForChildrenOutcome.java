@@ -42,7 +42,7 @@ public record WaitForChildrenOutcome(
         if (waitMode == null || waitMode.isBlank()) {
             waitMode = "all";
         }
-        if (!waitMode.equals("all") && !waitMode.equals("any")) {
+        if (!"all".equals(waitMode) && !"any".equals(waitMode)) {
             throw new IllegalArgumentException("waitForChildren waitMode must be all or any");
         }
     }

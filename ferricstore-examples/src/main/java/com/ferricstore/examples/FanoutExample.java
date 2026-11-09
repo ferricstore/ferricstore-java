@@ -104,7 +104,7 @@ public final class FanoutExample {
                 ctx -> {
                     List<String> failed =
                             ctx.childResults("resizes").children().stream()
-                                    .filter(child -> child.status().equals("failed"))
+                                    .filter(child -> "failed".equals(child.status()))
                                     .map(ChildResult::id)
                                     .toList();
                     return Outcomes.fail(Map.of("failed", failed));
