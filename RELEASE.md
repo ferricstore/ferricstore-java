@@ -22,8 +22,8 @@ Releases are published to Maven Central from GitHub Actions when a version tag i
 4. Create an unsigned annotated tag:
 
    ```bash
-   git tag -a v0.3.1 -m "Java SDK 0.3.1"
-   git push origin v0.3.1
+   git tag -a v0.4.0 -m "Java SDK 0.4.0"
+   git push origin v0.4.0
    ```
 
    The tag intentionally does not carry a GPG signature. GitHub Actions signs

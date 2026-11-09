@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-09
+
 - Add `WaitForChildrenOutcome` (`Outcomes.waitForChildren` and
   `WaitForChildrenOutcome.builder`), which creates child Flows and parks the
   parent in one fenced command, from sync and async handlers. Add
