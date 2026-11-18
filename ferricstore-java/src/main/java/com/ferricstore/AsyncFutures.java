@@ -3,12 +3,14 @@ package com.ferricstore;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -37,8 +39,13 @@ final class AsyncFutures {
         return CompletableFuture.failedFuture(unwrap(error));
     }
 
+    // A value the supplier returns after the result was cancelled goes to
+    // discard, so the caller can release it instead of leaking it.
     static <T> CompletableFuture<T> dispatch(
-            Executor executor, Supplier<? extends T> supplier, String operation) {
+            Executor executor,
+            Supplier<? extends T> supplier,
+            String operation,
+            Consumer<? super T> discard) {
         CompletableFuture<T> result = new CompletableFuture<>();
         Thread submitter = Thread.currentThread();
         AtomicBoolean dispatchReturned = new AtomicBoolean();
@@ -55,7 +62,10 @@ final class AsyncFutures {
                             return;
                         }
                         try {
-                            result.complete(supplier.get());
+                            T value = supplier.get();
+                            if (!result.complete(value)) {
+                                discard.accept(value);
+                            }
                         } catch (RuntimeException | Error failure) {
                             result.completeExceptionally(failure);
                         }
@@ -106,6 +116,12 @@ final class AsyncFutures {
                     }
                 });
         return result;
+    }
+
+    static void cancelStage(CompletionStage<?> stage) {
+        if (stage != null) {
+            stage.toCompletableFuture().cancel(false);
+        }
     }
 
     static <S, T> CompletableFuture<T> map(

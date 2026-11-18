@@ -625,6 +625,44 @@ final class DurableStepTest {
     }
 
     @Test
+    void cancellingWhileTheAsyncClosureRunsCancelsTheStageItReturns() throws Exception {
+        ScriptedExecutor commands = new ScriptedExecutor(recordResponse("charge", Map.of()));
+        FerricStoreClient client = FerricStoreClient.fromExecutor(commands, new StringCodec());
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<String> providerStage = new CompletableFuture<>();
+        ExecutorService executor =
+                Executors.newSingleThreadExecutor(task -> new Thread(task, "durable-closure"));
+        try {
+            CompletableFuture<DurableStepResult<String>> step =
+                    client.stepAsync(
+                            claim(),
+                            "charge-customer:v1",
+                            () -> {
+                                entered.countDown();
+                                assertTrue(awaitQuietly(release));
+                                return providerStage;
+                            },
+                            "schedule_warning",
+                            String.class,
+                            DurableStepOptions.defaults(),
+                            executor);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            assertTrue(step.cancel(false));
+            release.countDown();
+            executor.shutdown();
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
+
+            assertTrue(providerStage.isCancelled());
+            assertEquals(List.of("FLOW.EXTEND_LEASE"), commands.commandNames());
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void asyncClosureRejectsCallerRunsSaturationBeforeRunningApplicationCodeInline()
             throws Exception {
         ScriptedExecutor commands =
@@ -882,6 +920,15 @@ final class DurableStepTest {
                 runState,
                 Map.of("amount", 150),
                 Map.of("region", "eu"));
+    }
+
+    private static boolean awaitQuietly(CountDownLatch latch) {
+        try {
+            return latch.await(2, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private static FlowRecord record(Map<String, Object> refs) {
