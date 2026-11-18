@@ -13,6 +13,9 @@ public final class FerricStorePubSub implements AutoCloseable {
     private final Codec codec;
     private final ArrayDeque<PubSubMessage> pending = new ArrayDeque<>();
     private boolean closed;
+    // close() sends SUNSUBSCRIBE only after an SSUBSCRIBE, so sessions on
+    // servers without sharded Pub/Sub still close cleanly.
+    private boolean shardSubscribed;
 
     FerricStorePubSub(SessionExecutorFactory factory, Codec codec) {
         this.executor = Objects.requireNonNull(factory.openSession(), "session executor");
@@ -33,6 +36,21 @@ public final class FerricStorePubSub implements AutoCloseable {
 
     public Object punsubscribe(String... patterns) {
         return subscription("PUNSUBSCRIBE", false, patterns);
+    }
+
+    /**
+     * Subscribes to shard channels (SSUBSCRIBE), a namespace apart from {@link #subscribe}'s: only
+     * SPUBLISH reaches them, and their messages arrive with kind {@code smessage}.
+     */
+    public Object ssubscribe(String... channels) {
+        if (channels.length > 0) {
+            shardSubscribed = true;
+        }
+        return subscription("SSUBSCRIBE", true, channels);
+    }
+
+    public Object sunsubscribe(String... channels) {
+        return subscription("SUNSUBSCRIBE", false, channels);
     }
 
     /** Waits for one pushed message, returning {@code null} when the timeout expires. */
@@ -99,6 +117,17 @@ public final class FerricStorePubSub implements AutoCloseable {
                 failure.addSuppressed(error);
             }
         }
+        if (shardSubscribed) {
+            try {
+                executor.execute(List.of("SUNSUBSCRIBE"));
+            } catch (RuntimeException error) {
+                if (failure == null) {
+                    failure = error;
+                } else {
+                    failure.addSuppressed(error);
+                }
+            }
+        }
         try {
             executor.close();
         } catch (RuntimeException error) {
@@ -161,7 +190,7 @@ public final class FerricStorePubSub implements AutoCloseable {
             }
             return;
         }
-        if ("message".equals(kind) || "pmessage".equals(kind)) {
+        if ("message".equals(kind) || "pmessage".equals(kind) || "smessage".equals(kind)) {
             pending.addLast(
                     new PubSubMessage(
                             kind, channel, decodeMessage(payload.get("message")), pattern, event));

@@ -76,6 +76,59 @@ final class ConnectionSessionsTest {
         assertTrue(factory.sessions.get(0).closed);
     }
 
+    @Test
+    void shardPubsubDecodesShardMessagesAndLeavesShardChannelsOnClose() {
+        SessionFactory factory = new SessionFactory();
+        FerricStoreClient client = FerricStoreClient.fromExecutor(factory, new StringCodec());
+
+        try (FerricStorePubSub plain = client.pubsubSession()) {
+            plain.subscribe("events");
+        }
+        // A session that never used SSUBSCRIBE closes as before, so servers
+        // without sharded Pub/Sub are unaffected.
+        assertTrue(
+                factory.sessions.get(0).calls.stream()
+                        .noneMatch(call -> "SUNSUBSCRIBE".equals(call.get(0))));
+
+        factory.nextEvent =
+                java.util.Map.of(
+                        "event",
+                        "PUBSUB_MESSAGE",
+                        "payload",
+                        java.util.Map.of(
+                                "kind", "smessage",
+                                "channel", bytes("orders"),
+                                "message", bytes("created")));
+        try (FerricStorePubSub pubsub = client.pubsubSession()) {
+            pubsub.ssubscribe("orders");
+            PubSubMessage message = pubsub.getMessage(Duration.ofMillis(10));
+            assertEquals("smessage", message.kind());
+            assertEquals("orders", message.channel());
+            assertEquals("created", message.message());
+            assertThrows(IllegalArgumentException.class, pubsub::ssubscribe);
+        }
+
+        List<List<Object>> calls = factory.sessions.get(1).calls;
+        assertEquals(List.of("SSUBSCRIBE", "orders"), calls.get(0));
+        assertEquals(List.of("SUNSUBSCRIBE"), calls.get(calls.size() - 1));
+    }
+
+    @Test
+    void spublishSendsTheShardCommand() {
+        List<List<Object>> calls = new ArrayList<>();
+        FerricStoreClient client =
+                FerricStoreClient.fromExecutor(
+                        args -> {
+                            calls.add(new ArrayList<>(args));
+                            return 1L;
+                        },
+                        new StringCodec());
+
+        assertEquals(1, client.spublish("orders", "created"));
+        assertEquals("SPUBLISH", calls.get(0).get(0));
+        assertEquals("orders", calls.get(0).get(1));
+    }
+
     private static byte[] bytes(String value) {
         return value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }

@@ -23,6 +23,22 @@ final class NativeRoutingTest {
     }
 
     @Test
+    void routesNumkeysCommandsByTheirFirstKeyInsteadOfTheCount() {
+        assertEquals("a", NativeRouting.routeKey(List.of("ZUNION", 2, "a", "b", "WITHSCORES")));
+        assertEquals("a", NativeRouting.routeKey(List.of("ZINTER", "2", "a", "b")));
+        assertEquals("a", NativeRouting.routeKey(List.of("ZDIFF", 2, "a", "b")));
+        assertEquals("a", NativeRouting.routeKey(List.of("ZINTERCARD", 2, "a", "b", "LIMIT", 1)));
+        assertEquals("a", NativeRouting.routeKey(List.of("SINTERCARD", 2, "a", "b")));
+        assertEquals("a", NativeRouting.routeKey(List.of("ZMPOP", 2, "a", "b", "MIN")));
+        assertEquals("a", NativeRouting.routeKey(List.of("BZMPOP", 0, 2, "a", "b", "MIN")));
+        assertEquals("a", NativeRouting.routeKey(List.of("BLMPOP", 1, 1, "a", "LEFT")));
+        assertEquals("a", NativeRouting.routeKey(List.of("BZPOPMIN", "a", "b", 0)));
+        assertEquals("zset", NativeRouting.routeKey(List.of("ZREMRANGEBYLEX", "zset", "-", "+")));
+        assertEquals("dest", NativeRouting.routeKey(List.of("ZUNIONSTORE", "dest", 2, "a", "b")));
+        assertEquals("dest", NativeRouting.routeKey(List.of("ZRANGESTORE", "dest", "src", 0, -1)));
+    }
+
+    @Test
     void routesManyMutationsByTheirFirstFlowInsteadOfTheMixedSentinel() {
         assertEquals(
                 "flow-a",

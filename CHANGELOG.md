@@ -2,8 +2,49 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-09
+
+- Add `WaitForChildrenOutcome` (`Outcomes.waitForChildren` and
+  `WaitForChildrenOutcome.builder`), which creates child Flows and parks the
+  parent in one fenced command, from sync and async handlers. Add
+  `FerricStoreClient.childResults` and `WorkflowContext.childResults`, which
+  read a child group's statuses and every child's result or error in one value
+  read. Fan-in needs FerricStore 0.11.19 or newer.
+- `FanoutExample` waits for its children and reads their results. It used to
+  spawn them and then transition the parent itself, which a fast child could
+  race and which left the parent without the wait states FerricStore requires.
+  CI now runs it against the server.
+
+- Test against the immutable FerricStore OSS 0.12.19 image (from 0.12.18).
+  The 0.11.4 compatibility floor remains unchanged.
+
+## 0.3.1 - 2026-11-07
+
+- Test against the immutable FerricStore OSS 0.12.18 image (from 0.12.17).
+  The 0.11.4 compatibility floor remains unchanged.
+
+- Publish with central-publishing-maven-plugin 0.12.0. GitHub's runners moved
+  to Maven 3.10, which leaves local-repository files (`maven-metadata-local.xml`,
+  `_remote.repositories`) in the Central bundle; 0.11.0 did not remove them, and
+  Central rejected the 0.3.0 upload for them, so 0.3.0 never reached Maven
+  Central. The bundle check now rejects any file that is not a versioned
+  artifact file, and pull requests build and check the same bundle.
+
+## 0.3.0 - 2026-11-01
+
+Tagged but not published: Maven Central rejected the bundle (see 0.3.1), so
+these changes first ship in 0.3.1.
+
+- Route ZUNION, ZINTER, ZDIFF, ZINTERCARD and the other numkeys commands, ZMPOP,
+  BLMPOP and BZMPOP by their first key instead of the count or timeout, for the
+  sorted-set commands FerricStore 0.12.16 added.
+- Add sharded Pub/Sub: `FerricStorePubSub.ssubscribe` and `sunsubscribe`, and
+  `FerricStoreClient.spublish`. Shard messages arrive with kind `smessage`.
+  Closing a session that used SSUBSCRIBE also leaves its shard channels; other
+  sessions close as before, so older servers are unaffected.
 - Refresh current-server integration and documentation pins to the immutable
-  FerricStore OSS 0.11.24 image. The published SDK version remains unchanged.
+  FerricStore OSS 0.12.17 image (from 0.11.24), so CI runs the sharded Pub/Sub
+  integration test instead of skipping it.
 
 ## 0.2.4 - 2026-09-22
 

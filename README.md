@@ -23,7 +23,7 @@ Artifacts are published under the FerricStore GitHub organization namespace. Jav
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-java</artifactId>
-  <version>0.2.4</version>
+  <version>0.4.0</version>
 </dependency>
 ```
 
@@ -33,7 +33,7 @@ Spring Boot:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-boot-starter</artifactId>
-  <version>0.2.4</version>
+  <version>0.4.0</version>
 </dependency>
 ```
 
@@ -43,7 +43,7 @@ Optional Spring Statemachine adapter:
 <dependency>
   <groupId>io.github.ferricstore</groupId>
   <artifactId>ferricstore-spring-statemachine</artifactId>
-  <version>0.2.4</version>
+  <version>0.4.0</version>
 </dependency>
 ```
 
@@ -106,7 +106,7 @@ Run the complete HTTP-compatible integration surface through a real TLS
 listener with ACL authentication using:
 
 ```bash
-FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.24@sha256:910a7b62effd5687607907c8f4b414ba95d988c3534b18205c33e502c76c3974 \
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.12.19@sha256:91364b8a9f1e20fc530154068c9a0dedbf11b2d134b92692b258feeb784eff7d \
   scripts/run-http-integration.sh
 ```
 
@@ -300,8 +300,42 @@ Handlers return explicit outcomes:
 - `Outcomes.complete(result)`
 - `Outcomes.retry(error)`
 - `Outcomes.fail(error)`
+- `Outcomes.waitForChildren(children, waitState, success, failure)` (see below)
 
 FerricFlow does not replay Java handler code. Workers claim durable state, run normal Java code, then write the next state through the FerricFlow API.
+
+### Fan-out and fan-in
+
+A handler returns `waitForChildren` to create child Flows and park the parent
+in one fenced command. The parent waits in `waitState` without a lease or a
+worker. FerricStore moves it to `success` once the group resolves, or to
+`failure` at the first failed child (unless `onChildFailed` is `"ignore"`).
+The handler for the success state reads every child's status and result with
+`ctx.childResults(groupId)`:
+
+```java
+image.state("received", ctx -> WaitForChildrenOutcome.builder(
+        List.of(
+            new ChildSpec(ctx.id() + ":small", "resize", Map.of("size", "small")),
+            new ChildSpec(ctx.id() + ":large", "resize", Map.of("size", "large"))),
+        "waiting_for_resizes", "resized", "resize_failed")
+    .groupId("resizes")
+    .build());
+
+image.state("resized", ctx -> {
+    ChildGroupResults resizes = ctx.childResults("resizes");
+    List<?> results = resizes.children().stream().map(ChildResult::result).toList();
+    return Outcomes.complete(Map.of("resizes", results));
+});
+```
+
+Return `waitForChildren` rather than calling `spawnChildren` and then
+transitioning: a fast child can finish before the transition commits.
+`waitMode` is `"all"` (the default) or `"any"`. Children are ordered by id, and
+each one's `status` is `running`, `completed`, `failed`, or `cancelled`.
+`client.childResults(parentId, partitionKey, groupId)` reads a group from
+outside a handler and returns null when it does not exist. Fan-in needs
+FerricStore 0.11.19 or newer. `FanoutExample` is the complete program.
 
 ## Spring Statemachine Adapter
 

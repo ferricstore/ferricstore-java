@@ -1,6 +1,6 @@
 services:
   ferricstore:
-    image: ${FERRICSTORE_IMAGE:-quay.io/ferricstore/ferricstore:0.11.24@sha256:910a7b62effd5687607907c8f4b414ba95d988c3534b18205c33e502c76c3974}
+    image: ${FERRICSTORE_IMAGE:-quay.io/ferricstore/ferricstore:0.12.19@sha256:91364b8a9f1e20fc530154068c9a0dedbf11b2d134b92692b258feeb784eff7d}
     ports:
       - "127.0.0.1:${FERRICSTORE_PORT:-6388}:6388"
     environment:

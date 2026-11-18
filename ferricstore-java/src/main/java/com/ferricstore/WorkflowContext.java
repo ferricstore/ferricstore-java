@@ -344,6 +344,22 @@ public final class WorkflowContext {
                                         closureExecutor)));
     }
 
+    /**
+     * Reads one of this Flow's child groups, ordered by child id.
+     *
+     * @throws FerricStoreException when the Flow has no group with that id
+     */
+    public ChildGroupResults childResults(String groupId) {
+        ClaimedItem current = claim();
+        String group = groupId == null || groupId.isEmpty() ? "default" : groupId;
+        ChildGroupResults results =
+                client.childResults(current.id(), current.partitionKey(), group);
+        if (results == null) {
+            throw new FerricStoreException("Flow " + current.id() + " has no child group " + group);
+        }
+        return results;
+    }
+
     public Object value(String name) {
         Object direct = job.values().get(name);
         if (direct != null) {
