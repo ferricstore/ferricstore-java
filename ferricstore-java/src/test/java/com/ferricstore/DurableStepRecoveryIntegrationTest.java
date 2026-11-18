@@ -152,7 +152,9 @@ final class DurableStepRecoveryIntegrationTest {
             assertTransport(client);
             FlowIdentity flow = create(client, "async-cancel", true);
             CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch providerStopped = new CountDownLatch(1);
             CompletableFuture<String> providerStage = new CompletableFuture<>();
+            providerStage.whenComplete((ignored, failure) -> providerStopped.countDown());
             AtomicReference<ClaimedItem> claimA = new AtomicReference<>();
             AtomicReference<ClaimedItem> claimB = new AtomicReference<>();
             Workflow workflowA =
@@ -177,6 +179,7 @@ final class DurableStepRecoveryIntegrationTest {
                             .runOnceAsync(async);
             assertTrue(entered.await(RECOVERY_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS));
             assertTrue(active.cancel(false));
+            assertTrue(providerStopped.await(RECOVERY_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS));
             assertTrue(providerStage.isCancelled());
 
             FlowRecord abandoned = client.get(flow.id(), flow.partition());

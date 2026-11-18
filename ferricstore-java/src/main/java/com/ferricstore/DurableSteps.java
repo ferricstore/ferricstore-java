@@ -235,7 +235,10 @@ final class DurableSteps {
                     return AsyncFutures.compose(
                             AsyncFutures.compose(
                                     AsyncFutures.dispatch(
-                                            closureExecutor, run::get, "durable step closure"),
+                                            closureExecutor,
+                                            run::get,
+                                            "durable step closure",
+                                            AsyncFutures::cancelStage),
                                     stage ->
                                             Objects.requireNonNull(stage, "durable step stage")
                                                     .toCompletableFuture()),
