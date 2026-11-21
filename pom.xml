@@ -63,8 +63,8 @@
     <maven-enforcer-plugin.version>3.7.0</maven-enforcer-plugin.version>
     <spotless-maven-plugin.version>3.11.0</spotless-maven-plugin.version>
     <google-java-format.version>1.36.1</google-java-format.version>
-    <plexus-compiler-javac-errorprone.version>2.18.0</plexus-compiler-javac-errorprone.version>
-    <error-prone.version>2.52.0</error-prone.version>
+    <plexus-compiler-javac-errorprone.version>2.18.1</plexus-compiler-javac-errorprone.version>
+    <error-prone.version>2.53.0</error-prone.version>
     <spotbugs.skip>false</spotbugs.skip>
   </properties>
 
